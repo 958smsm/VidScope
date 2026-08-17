@@ -1,0 +1,11 @@
+/build/
+/out/
+/.vs/
+/.vscode/
+/.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+*.log
+tests/media/generated/
