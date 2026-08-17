@@ -1,7 +1,5 @@
 # Phase 2 final review
 
-Review date: 2026-08-17
-
 The Phase 0-2 foundation is implemented and the final gate is green. This
 review was performed after the duplicate-timestamp, non-zero stream-origin,
 configurable N-step, HDR10 metadata, and full media/UI smoke changes.

@@ -170,23 +170,23 @@ std::unique_ptr<MediaSource> MediaSource::open(
         throw FfmpegError("Open media cancelled", AVERROR_EXIT);
     }
 
-    static std::once_flag networkInitialization;
-    std::call_once(networkInitialization, [] { avformat_network_init(); });
+    ensureFfmpegNetworkInitialized();
 
     auto interrupt = std::make_unique<InterruptState>(std::move(cancellation));
-    AVFormatContext* rawFormat = avformat_alloc_context();
-    if (rawFormat == nullptr) {
+    FormatContextPtr format(avformat_alloc_context());
+    if (!format) {
         throw std::bad_alloc();
     }
-    rawFormat->interrupt_callback.callback = &InterruptState::callback;
-    rawFormat->interrupt_callback.opaque = interrupt.get();
+    format->interrupt_callback.callback = &InterruptState::callback;
+    format->interrupt_callback.opaque = interrupt.get();
     if (options.generateMissingPresentationTimestamps) {
-        rawFormat->flags |= AVFMT_FLAG_GENPTS;
+        format->flags |= AVFMT_FLAG_GENPTS;
     }
 
     const std::string inputPath = pathToUtf8(path);
+    AVFormatContext* rawFormat = format.release();
     const int openResult = avformat_open_input(&rawFormat, inputPath.c_str(), nullptr, nullptr);
-    FormatContextPtr format(rawFormat);
+    format.reset(rawFormat);
     if (openResult < 0) {
         throw FfmpegError("Open media '" + inputPath + "'", openResult);
     }

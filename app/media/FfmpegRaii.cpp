@@ -11,6 +11,25 @@ extern "C" {
 namespace vidscope::media {
 namespace {
 
+class FfmpegNetworkLifetime final {
+public:
+    FfmpegNetworkLifetime()
+    {
+        const int result = avformat_network_init();
+        if (result < 0) {
+            throw FfmpegError("Initialize FFmpeg networking", result);
+        }
+    }
+
+    ~FfmpegNetworkLifetime() noexcept
+    {
+        avformat_network_deinit();
+    }
+
+    FfmpegNetworkLifetime(const FfmpegNetworkLifetime&) = delete;
+    FfmpegNetworkLifetime& operator=(const FfmpegNetworkLifetime&) = delete;
+};
+
 std::string makeErrorMessage(std::string operation, const int errorCode)
 {
     std::string message = std::move(operation);
@@ -39,6 +58,12 @@ FfmpegError::FfmpegError(std::string operation, const int errorCode)
     : std::runtime_error(makeErrorMessage(std::move(operation), errorCode))
     , errorCode_(errorCode)
 {
+}
+
+void ensureFfmpegNetworkInitialized()
+{
+    static const FfmpegNetworkLifetime lifetime;
+    (void)lifetime;
 }
 
 void FormatContextDeleter::operator()(AVFormatContext* context) const noexcept

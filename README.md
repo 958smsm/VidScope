@@ -3,20 +3,25 @@
 VidScope is a C++20/Qt 6 desktop foundation for frame-accurate video
 inspection. It integrates FFmpeg directly, keeping presentation timestamps,
 B-frame reordering, VFR navigation, seek behavior, decoded-frame ownership,
-and cache policy under application control.
+timeline coordinates, and cache policy under application control.
 
-The implemented milestone is Phase 0-2: media opening, direct demux/decode,
-optional hardware decoding with CPU fallback, bounded frame history and forward
-queues, cancellable keyframe-based seek, exact next/previous and signed N-frame
-navigation, keyframe navigation, HDR10/color/frame metadata, a non-blocking Qt
-controller, video viewport, logging, deterministic shutdown, and synthetic
-frame-accuracy regressions.
+The implemented milestone is Phase 0-3. It includes media opening, direct
+demux/decode, optional hardware decoding with CPU fallback, bounded frame
+history and forward queues, cancellable keyframe-based seek, exact
+next/previous and signed N-frame navigation, keyframe navigation,
+HDR10/color/frame metadata, deterministic shutdown, and a custom zoomable
+timeline. The timeline provides nanosecond-safe timestamp mapping, clamped
+viewport zoom and pan, playhead and ruler ticks, exact observed VFR frame
+boundaries, derived decoded-keyframe ticks, bounded
+keyframe/scene/chapter/bookmark marker storage, In/Out selection, hover
+coordinates, and cancellable seek/scrub
+integration.
 
 ## Prerequisites
 
 - CMake 3.25+
 - C++20 compiler (MSVC 2022-compatible, Clang, or GCC)
-- Qt 6.6+ (`Core`, `Gui`, and `Widgets`)
+- Qt 6.6+ (`Core`, `Gui`, `Widgets`, and `Test` when tests are enabled)
 - shared FFmpeg development SDK with libavformat, libavcodec, libavutil,
   libswscale, and libswresample
 - FFmpeg CLI for generated integration fixtures
@@ -46,26 +51,53 @@ ctest --test-dir build -C Release --output-on-failure
 
 ## Controls
 
+Playback and navigation:
+
 - `Ctrl+O`: open media
-- `Space`: play/pause
-- `K`: pause
-- `Left` / `,`: exact previous presentation frame
-- `Right` / `.`: exact next presentation frame
+- `Space`: play/pause; `K`: pause; `S`: stop
+- `Left` / `,` / `J`: exact previous presentation frame
+- `Right` / `.` / `L`: exact next presentation frame
 - frame-step selector: presets 1, 2, 5, 10, or custom 1-1000
 - `Shift+Left` / `Shift+Right`: exact backward/forward selected-N jump
 - `Ctrl+Left` / `Ctrl+Right`: previous/next decoded keyframe
-- click or drag the seek bar: cancellable timestamp seek
+- `Alt+Left` / `Alt+Right`: previous/next available scene marker
+
+Timeline:
+
+- left-click or left-drag: seek/scrub; repeated identical drag positions are
+  coalesced
+- middle-drag: pan the visible time window without seeking
+- wheel: zoom around the cursor timestamp
+- `Shift+wheel`: horizontal pan
+- `Shift+left-drag`: create a normalized range; drag near an existing endpoint
+  to resize it
+- click a marker: activate it and seek to its exact timestamp
+- hover: report timestamp and nearest established presentation index; decoded
+  preview imagery is deliberately deferred
+- `I` / `O`: set In/Out at the playhead; `M`: toggle a bookmark
+- `Ctrl+Shift+X`: clear selection; `Ctrl+0`: show the entire video
+- configured Zoom In/Out shortcuts: zoom around the visible playhead, or the
+  viewport center when the playhead is outside it
+
+Application shortcuts can be remapped through **Settings > Keyboard
+Shortcuts**.
 
 ## Documentation and scope
 
 - [Phase 0 assessment](docs/phase-0-assessment.md)
 - [Architecture](docs/architecture.md)
+- [Phase 1 final review](docs/phase-1-review.md)
 - [Phase 2 final review](docs/phase-2-review.md)
+- [Phase 3 final review](docs/phase-3-review.md)
 
-Advanced timeline zoom, hover previews, thumbnails, analysis heatmaps, scenes,
-duplicate/freeze analysis, audio rendering/A-V sync, detailed inspection, and
-export deliberately remain after the Phase 2 frame-accuracy gate. They are not
-represented by fake data or placeholders.
+Phase 3 is the completed custom-timeline foundation. Asynchronous hover-frame
+popups, thumbnail scheduling/cache, preview filmstrips, motion/similarity
+analysis and heatmaps, automatic scene and duplicate/freeze detection, audio
+rendering/A-V sync, detailed inspection, and export remain Phase 4 or later.
+Known frame boundaries and keyframe ticks grow only from exact frames published
+by the playback engine; Phase 3 does not perform a hidden full-file indexing
+pass. The current timeline exposes extension points for later systems without
+fake preview or analysis data.
 
 ## FFmpeg licensing
 

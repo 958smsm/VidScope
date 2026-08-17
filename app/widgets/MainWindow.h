@@ -13,9 +13,11 @@ namespace vidscope::render {
 class VideoViewport;
 }
 
-namespace vidscope::widgets {
+namespace vidscope::timeline {
+class TimelineWidget;
+}
 
-class SeekBar;
+namespace vidscope::widgets {
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -37,13 +39,18 @@ private:
     void createMenus();
     void createShortcuts();
     void updateFrameStatus(const media::DecodedFrame& frame);
+    void updateSelectionStatus();
+    void seekAdjacentScene(bool forward);
+    void showShortcutEditor();
     [[nodiscard]] int frameStepCount() const;
 
+    bool opening_ = false;
     playback::PlaybackController* controller_ = nullptr;
     render::VideoViewport* viewport_ = nullptr;
-    SeekBar* seekBar_ = nullptr;
+    timeline::TimelineWidget* timeline_ = nullptr;
     QLabel* frameStatus_ = nullptr;
     QLabel* mediaStatus_ = nullptr;
+    QLabel* selectionStatus_ = nullptr;
     QComboBox* frameStepBox_ = nullptr;
     QToolButton* playPauseButton_ = nullptr;
 };

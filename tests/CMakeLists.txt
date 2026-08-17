@@ -5,6 +5,7 @@ add_executable(
     unit/FrameCacheTests.cpp
     unit/FrameQueueTests.cpp
     unit/SeekControllerTests.cpp
+    unit/TimelineModelTests.cpp
     unit/TimestampTests.cpp
     unit/VisibleImageTests.cpp
 )
@@ -12,6 +13,12 @@ target_include_directories(vidscope_unit_tests PRIVATE "${CMAKE_CURRENT_SOURCE_D
 target_link_libraries(vidscope_unit_tests PRIVATE vidscope_engine)
 vidscope_enable_warnings(vidscope_unit_tests)
 add_test(NAME vidscope.unit COMMAND vidscope_unit_tests)
+set_tests_properties(
+    vidscope.unit
+    PROPERTIES
+        LABELS "phase1;phase2;phase3;unit"
+        TIMEOUT 120
+)
 
 add_executable(
     vidscope_integration_tests
@@ -23,6 +30,19 @@ target_link_libraries(vidscope_integration_tests PRIVATE vidscope_engine)
 vidscope_enable_warnings(vidscope_integration_tests)
 
 add_executable(
+    vidscope_phase1_foundation_tests
+    TestHarness.h
+    integration/Phase1FoundationTests.cpp
+)
+target_include_directories(
+    vidscope_phase1_foundation_tests
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(vidscope_phase1_foundation_tests PRIVATE vidscope_ui)
+vidscope_enable_warnings(vidscope_phase1_foundation_tests)
+
+add_executable(
     vidscope_phase2_stress_tests
     TestHarness.h
     integration/Phase2StressTests.cpp
@@ -30,6 +50,78 @@ add_executable(
 target_include_directories(vidscope_phase2_stress_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(vidscope_phase2_stress_tests PRIVATE vidscope_engine)
 vidscope_enable_warnings(vidscope_phase2_stress_tests)
+
+add_executable(
+    vidscope_timeline_widget_tests
+    TestHarness.h
+    integration/TimelineWidgetTests.cpp
+)
+target_include_directories(vidscope_timeline_widget_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(vidscope_timeline_widget_tests PRIVATE vidscope_ui Qt6::Test)
+vidscope_enable_warnings(vidscope_timeline_widget_tests)
+
+add_executable(
+    vidscope_timeline_widget_precision_tests
+    TestHarness.h
+    integration/TimelineWidgetPrecisionTests.cpp
+)
+target_include_directories(
+    vidscope_timeline_widget_precision_tests
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(
+    vidscope_timeline_widget_precision_tests
+    PRIVATE
+        vidscope_ui
+        Qt6::Test
+)
+vidscope_enable_warnings(vidscope_timeline_widget_precision_tests)
+
+add_executable(
+    vidscope_timeline_media_tests
+    TestHarness.h
+    integration/TimelineMediaIntegrationTests.cpp
+)
+target_include_directories(vidscope_timeline_media_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_link_libraries(vidscope_timeline_media_tests PRIVATE vidscope_engine)
+vidscope_enable_warnings(vidscope_timeline_media_tests)
+
+add_executable(
+    vidscope_phase3_timeline_stress_tests
+    TestHarness.h
+    integration/Phase3TimelineStressTests.cpp
+)
+target_include_directories(
+    vidscope_phase3_timeline_stress_tests
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(
+    vidscope_phase3_timeline_stress_tests
+    PRIVATE
+        vidscope_ui
+        Qt6::Test
+)
+vidscope_enable_warnings(vidscope_phase3_timeline_stress_tests)
+
+add_executable(
+    vidscope_timeline_end_to_end_tests
+    TestHarness.h
+    integration/TimelineEndToEndTests.cpp
+)
+target_include_directories(
+    vidscope_timeline_end_to_end_tests
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(
+    vidscope_timeline_end_to_end_tests
+    PRIVATE
+        vidscope_ui
+        Qt6::Test
+)
+vidscope_enable_warnings(vidscope_timeline_end_to_end_tests)
 
 function(vidscope_configure_test_runtime test_name)
     if(NOT WIN32)
@@ -66,6 +158,29 @@ endfunction()
 
 vidscope_configure_test_runtime(vidscope.unit)
 
+add_test(NAME vidscope.timeline_widget COMMAND vidscope_timeline_widget_tests)
+set_tests_properties(
+    vidscope.timeline_widget
+    PROPERTIES
+        LABELS "phase3;ui"
+        TIMEOUT 30
+)
+vidscope_configure_offscreen_test(vidscope.timeline_widget)
+vidscope_configure_test_runtime(vidscope.timeline_widget)
+
+add_test(
+    NAME vidscope.timeline_widget_precision
+    COMMAND vidscope_timeline_widget_precision_tests
+)
+set_tests_properties(
+    vidscope.timeline_widget_precision
+    PROPERTIES
+        LABELS "phase3;ui"
+        TIMEOUT 30
+)
+vidscope_configure_offscreen_test(vidscope.timeline_widget_precision)
+vidscope_configure_test_runtime(vidscope.timeline_widget_precision)
+
 if(FFmpeg_EXECUTABLE)
     set(_vidscope_fixture_dir "${CMAKE_CURRENT_BINARY_DIR}/media")
     add_test(
@@ -76,7 +191,28 @@ if(FFmpeg_EXECUTABLE)
             "-DOUTPUT_DIR=${_vidscope_fixture_dir}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/media/GenerateMedia.cmake"
     )
-    set_tests_properties(vidscope.generate_media PROPERTIES FIXTURES_SETUP VidScopeMedia TIMEOUT 120)
+    set_tests_properties(
+        vidscope.generate_media
+        PROPERTIES
+            FIXTURES_SETUP VidScopeMedia
+            LABELS "media-fixture"
+            TIMEOUT 120
+    )
+
+    add_test(
+        NAME vidscope.phase1_foundation
+        COMMAND vidscope_phase1_foundation_tests "${_vidscope_fixture_dir}"
+    )
+    set_tests_properties(
+        vidscope.phase1_foundation
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase1;media;ui"
+            RESOURCE_LOCK VidScopeGuiMedia
+            TIMEOUT 120
+    )
+    vidscope_configure_offscreen_test(vidscope.phase1_foundation)
+    vidscope_configure_test_runtime(vidscope.phase1_foundation)
 
     add_test(
         NAME vidscope.integration
@@ -86,6 +222,7 @@ if(FFmpeg_EXECUTABLE)
         vidscope.integration
         PROPERTIES
             FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase2;media"
             TIMEOUT 120
     )
     vidscope_configure_test_runtime(vidscope.integration)
@@ -98,9 +235,53 @@ if(FFmpeg_EXECUTABLE)
         vidscope.phase2_stress
         PROPERTIES
             FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase2;stress"
             TIMEOUT 120
     )
     vidscope_configure_test_runtime(vidscope.phase2_stress)
+
+    add_test(
+        NAME vidscope.timeline_media
+        COMMAND vidscope_timeline_media_tests "${_vidscope_fixture_dir}"
+    )
+    set_tests_properties(
+        vidscope.timeline_media
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase3;media"
+            TIMEOUT 120
+    )
+    vidscope_configure_test_runtime(vidscope.timeline_media)
+
+    add_test(
+        NAME vidscope.phase3_timeline_stress
+        COMMAND vidscope_phase3_timeline_stress_tests "${_vidscope_fixture_dir}"
+    )
+    set_tests_properties(
+        vidscope.phase3_timeline_stress
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase3;stress;ui"
+            RESOURCE_LOCK VidScopeGuiMedia
+            TIMEOUT 120
+    )
+    vidscope_configure_offscreen_test(vidscope.phase3_timeline_stress)
+    vidscope_configure_test_runtime(vidscope.phase3_timeline_stress)
+
+    add_test(
+        NAME vidscope.timeline_end_to_end
+        COMMAND vidscope_timeline_end_to_end_tests "${_vidscope_fixture_dir}"
+    )
+    set_tests_properties(
+        vidscope.timeline_end_to_end
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase3;media;ui"
+            RESOURCE_LOCK VidScopeGuiMedia
+            TIMEOUT 120
+    )
+    vidscope_configure_offscreen_test(vidscope.timeline_end_to_end)
+    vidscope_configure_test_runtime(vidscope.timeline_end_to_end)
 
     add_test(
         NAME vidscope.ui_media_smoke
@@ -110,6 +291,8 @@ if(FFmpeg_EXECUTABLE)
         vidscope.ui_media_smoke
         PROPERTIES
             FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase1;phase2;phase3;ui"
+            RESOURCE_LOCK VidScopeGuiMedia
             TIMEOUT 45
     )
     vidscope_configure_offscreen_test(vidscope.ui_media_smoke)
@@ -119,6 +302,11 @@ else()
 endif()
 
 add_test(NAME vidscope.ui_smoke COMMAND VidScope --smoke-test)
-set_tests_properties(vidscope.ui_smoke PROPERTIES TIMEOUT 30)
+set_tests_properties(
+    vidscope.ui_smoke
+    PROPERTIES
+        LABELS "phase1;phase3;ui"
+        TIMEOUT 30
+)
 vidscope_configure_offscreen_test(vidscope.ui_smoke)
 vidscope_configure_test_runtime(vidscope.ui_smoke)

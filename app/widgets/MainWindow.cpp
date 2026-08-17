@@ -1,7 +1,8 @@
 #include "widgets/MainWindow.h"
 
 #include "render/VideoViewport.h"
-#include "widgets/SeekBar.h"
+#include "timeline/TimelineWidget.h"
+#include "widgets/ShortcutEditorDialog.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
@@ -11,7 +12,6 @@
 #include <QtGui/QIcon>
 #include <QtGui/QIntValidator>
 #include <QtGui/QKeySequence>
-#include <QtGui/QShortcut>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
 #include <QtWidgets/QFileDialog>
@@ -119,8 +119,8 @@ MainWindow::MainWindow(QWidget* parent)
     controller_->setObjectName(QStringLiteral("playbackController"));
     setObjectName(QStringLiteral("mainWindow"));
     setWindowTitle(QStringLiteral("VidScope"));
-    setMinimumSize(900, 620);
-    resize(1200, 800);
+    setMinimumSize(960, 700);
+    resize(1280, 860);
 
     createActions();
     createLayout();
@@ -137,9 +137,10 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::showPlaybackError);
     connect(controller_, &playback::PlaybackController::mediaClosed, this, [this] {
         viewport_->clearFrame();
-        seekBar_->setDuration(0);
+        timeline_->setDuration(0);
         mediaStatus_->setText(tr("No media loaded"));
         frameStatus_->setText(tr("Frame -"));
+        updateSelectionStatus();
         setWindowTitle(QStringLiteral("VidScope"));
         if (auto* position = findChild<QLabel*>(QStringLiteral("positionLabel"))) {
             position->setProperty("positionNs", QVariant::fromValue<qint64>(0));
@@ -148,7 +149,7 @@ MainWindow::MainWindow(QWidget* parent)
         }
     });
     connect(controller_, &playback::PlaybackController::durationChanged, this, [this](qint64 duration) {
-        seekBar_->setDuration(duration);
+        timeline_->setDuration(duration);
         if (auto* position = findChild<QLabel*>(QStringLiteral("positionLabel"))) {
             position->setProperty("durationNs", QVariant::fromValue(duration));
             const auto current = position->property("positionNs").toLongLong();
@@ -156,7 +157,7 @@ MainWindow::MainWindow(QWidget* parent)
         }
     });
     connect(controller_, &playback::PlaybackController::positionChanged, this, [this](qint64 positionNs) {
-        seekBar_->setPosition(positionNs);
+        timeline_->setPosition(positionNs);
         if (auto* position = findChild<QLabel*>(QStringLiteral("positionLabel"))) {
             position->setProperty("positionNs", QVariant::fromValue(positionNs));
             const auto duration = position->property("durationNs").toLongLong();
@@ -167,7 +168,11 @@ MainWindow::MainWindow(QWidget* parent)
             [this](double decodeFps, qint64 seekMicroseconds, qsizetype cachedFrames) {
                 if (auto* metrics = findChild<QLabel*>(QStringLiteral("metricsLabel"))) {
                     const QString seekText = seekMicroseconds > 0
-                        ? tr(" | seek %1 ms").arg(static_cast<double>(seekMicroseconds) / 1'000.0, 0, 'f', 1)
+                        ? tr(" | seek %1 ms").arg(
+                              static_cast<double>(seekMicroseconds) / 1'000.0,
+                              0,
+                              'f',
+                              1)
                         : QString{};
                     metrics->setText(
                         tr("decode %1 fps%2 | cache %3")
@@ -176,11 +181,19 @@ MainWindow::MainWindow(QWidget* parent)
                             .arg(cachedFrames));
                 }
             });
-    connect(seekBar_, &SeekBar::seekRequested,
+    connect(timeline_, &timeline::TimelineWidget::seekRequested,
             controller_, &playback::PlaybackController::seekToNanoseconds);
-    connect(seekBar_, &SeekBar::scrubbingChanged, this, [this](bool active) {
+    connect(timeline_, &timeline::TimelineWidget::scrubbingChanged, this, [this](bool active) {
         statusBar()->showMessage(active ? tr("Scrubbing") : stateDescription(controller_->state()));
     });
+    connect(timeline_, &timeline::TimelineWidget::selectionChanged,
+            this, [this](qint64, qint64, bool) { updateSelectionStatus(); });
+    connect(timeline_, &timeline::TimelineWidget::markerActivated,
+            this, [this](quint64, qint64 time) {
+                statusBar()->showMessage(
+                    tr("Marker at %1").arg(formatTime(time)),
+                    1500);
+            });
 
     handleState(playback::PlaybackState::Closed);
 
@@ -220,6 +233,9 @@ void MainWindow::createActions()
     connect(playPause, &QAction::triggered,
             controller_, &playback::PlaybackController::togglePlayPause);
 
+    auto* pause = createAction("actionPause", tr("Pa&use"));
+    connect(pause, &QAction::triggered, controller_, &playback::PlaybackController::pause);
+
     auto* stop = createAction("actionStop", tr("&Stop"));
     stop->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
     connect(stop, &QAction::triggered, controller_, &playback::PlaybackController::stop);
@@ -258,11 +274,69 @@ void MainWindow::createActions()
     connect(nextKeyframe, &QAction::triggered,
             controller_, &playback::PlaybackController::nextKeyframe);
 
+    auto* previousScene = createAction("actionPreviousScene", tr("Previous &Scene"));
+    connect(previousScene, &QAction::triggered, this, [this] { seekAdjacentScene(false); });
+
+    auto* nextScene = createAction("actionNextScene", tr("Next S&cene"));
+    connect(nextScene, &QAction::triggered, this, [this] { seekAdjacentScene(true); });
+
+    auto* zoomIn = createAction("actionTimelineZoomIn", tr("Zoom &In"));
+    connect(zoomIn, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->zoomIn();
+        }
+    });
+
+    auto* zoomOut = createAction("actionTimelineZoomOut", tr("Zoom &Out"));
+    connect(zoomOut, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->zoomOut();
+        }
+    });
+
+    auto* showAll = createAction("actionTimelineShowAll", tr("Show &Entire Video"));
+    connect(showAll, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->showEntireMedia();
+        }
+    });
+
+    auto* setIn = createAction("actionSetIn", tr("Set &In"));
+    connect(setIn, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->setInPointAtPlayhead();
+        }
+    });
+
+    auto* setOut = createAction("actionSetOut", tr("Set &Out"));
+    connect(setOut, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->setOutPointAtPlayhead();
+        }
+    });
+
+    auto* clearSelection = createAction("actionClearSelection", tr("&Clear Selection"));
+    connect(clearSelection, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->clearSelection();
+        }
+    });
+
+    auto* addMarker = createAction("actionAddMarker", tr("Add &Bookmark"));
+    connect(addMarker, &QAction::triggered, this, [this] {
+        if (timeline_) {
+            timeline_->toggleBookmarkAtPlayhead();
+        }
+    });
+
     auto* fullscreen = createAction("actionFullscreen", tr("&Full Screen"));
     fullscreen->setCheckable(true);
     connect(fullscreen, &QAction::toggled, this, [this](bool enabled) {
         enabled ? showFullScreen() : showNormal();
     });
+
+    auto* shortcuts = createAction("actionKeyboardShortcuts", tr("&Keyboard Shortcuts..."));
+    connect(shortcuts, &QAction::triggered, this, &MainWindow::showShortcutEditor);
 
     auto* exit = createAction("actionExit", tr("E&xit"));
     connect(exit, &QAction::triggered, this, &QWidget::close);
@@ -293,8 +367,8 @@ void MainWindow::createLayout()
     controlsLayout->setContentsMargins(14, 10, 14, 10);
     controlsLayout->setSpacing(7);
 
-    seekBar_ = new SeekBar(controls);
-    controlsLayout->addWidget(seekBar_);
+    timeline_ = new timeline::TimelineWidget(controls);
+    controlsLayout->addWidget(timeline_);
 
     auto* transport = new QHBoxLayout;
     transport->setContentsMargins(0, 0, 0, 0);
@@ -369,7 +443,13 @@ void MainWindow::createLayout()
     frameStatus_->setObjectName(QStringLiteral("frameStatus"));
     frameStatus_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
     frameStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    inspection->addWidget(frameStatus_, 1);
+    inspection->addWidget(frameStatus_, 2);
+
+    selectionStatus_ = new QLabel(tr("Selection -"), controls);
+    selectionStatus_->setObjectName(QStringLiteral("selectionStatus"));
+    selectionStatus_->setAlignment(Qt::AlignCenter);
+    selectionStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    inspection->addWidget(selectionStatus_, 1);
 
     auto* metrics = new QLabel(tr("decode - | cache 0"), controls);
     metrics->setObjectName(QStringLiteral("metricsLabel"));
@@ -408,6 +488,7 @@ void MainWindow::createLayout()
         }
         QLabel#mediaStatus { color: #c5ccd7; }
         QLabel#frameStatus { color: #b8c2d0; }
+        QLabel#selectionStatus { color: #7db7e8; }
         QLabel#metricsLabel { color: #7f8a99; }
         QLabel#positionLabel { color: #dce7f5; }
         QToolButton {
@@ -436,18 +517,36 @@ void MainWindow::createMenus()
 
     auto* playbackMenu = menuBar()->addMenu(tr("&Playback"));
     playbackMenu->addAction(actionByName(this, "actionPlayPause"));
+    playbackMenu->addAction(actionByName(this, "actionPause"));
     playbackMenu->addAction(actionByName(this, "actionStop"));
-    playbackMenu->addSeparator();
-    playbackMenu->addAction(actionByName(this, "actionPreviousFrame"));
-    playbackMenu->addAction(actionByName(this, "actionNextFrame"));
-    playbackMenu->addAction(actionByName(this, "actionJumpBack"));
-    playbackMenu->addAction(actionByName(this, "actionJumpForward"));
-    playbackMenu->addSeparator();
-    playbackMenu->addAction(actionByName(this, "actionPreviousKeyframe"));
-    playbackMenu->addAction(actionByName(this, "actionNextKeyframe"));
+
+    auto* navigationMenu = menuBar()->addMenu(tr("&Navigation"));
+    navigationMenu->addAction(actionByName(this, "actionPreviousFrame"));
+    navigationMenu->addAction(actionByName(this, "actionNextFrame"));
+    navigationMenu->addAction(actionByName(this, "actionJumpBack"));
+    navigationMenu->addAction(actionByName(this, "actionJumpForward"));
+    navigationMenu->addSeparator();
+    navigationMenu->addAction(actionByName(this, "actionPreviousKeyframe"));
+    navigationMenu->addAction(actionByName(this, "actionNextKeyframe"));
+    navigationMenu->addAction(actionByName(this, "actionPreviousScene"));
+    navigationMenu->addAction(actionByName(this, "actionNextScene"));
+
+    auto* timelineMenu = menuBar()->addMenu(tr("&Timeline"));
+    timelineMenu->addAction(actionByName(this, "actionTimelineZoomIn"));
+    timelineMenu->addAction(actionByName(this, "actionTimelineZoomOut"));
+    timelineMenu->addAction(actionByName(this, "actionTimelineShowAll"));
+    timelineMenu->addSeparator();
+    timelineMenu->addAction(actionByName(this, "actionSetIn"));
+    timelineMenu->addAction(actionByName(this, "actionSetOut"));
+    timelineMenu->addAction(actionByName(this, "actionClearSelection"));
+    timelineMenu->addSeparator();
+    timelineMenu->addAction(actionByName(this, "actionAddMarker"));
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(actionByName(this, "actionFullscreen"));
+
+    auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
+    settingsMenu->addAction(actionByName(this, "actionKeyboardShortcuts"));
 
     auto* helpMenu = menuBar()->addMenu(tr("&Help"));
     helpMenu->addAction(actionByName(this, "actionAbout"));
@@ -455,34 +554,45 @@ void MainWindow::createMenus()
 
 void MainWindow::createShortcuts()
 {
-    actionByName(this, "actionOpen")->setShortcut(QKeySequence::Open);
-    actionByName(this, "actionExit")->setShortcut(QKeySequence::Quit);
-    actionByName(this, "actionPlayPause")
-        ->setShortcut(QKeySequence(Qt::Key_Space));
-    actionByName(this, "actionStop")->setShortcut(QKeySequence(Qt::Key_S));
-    actionByName(this, "actionPreviousFrame")
-        ->setShortcuts({
-            QKeySequence(Qt::Key_Left),
-            QKeySequence(Qt::Key_Comma),
-            QKeySequence(Qt::Key_J)});
-    actionByName(this, "actionNextFrame")
-        ->setShortcuts({
-            QKeySequence(Qt::Key_Right),
-            QKeySequence(Qt::Key_Period),
-            QKeySequence(Qt::Key_L)});
-    actionByName(this, "actionPreviousKeyframe")
-        ->setShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Left)));
-    actionByName(this, "actionNextKeyframe")
-        ->setShortcut(QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Right)));
-    actionByName(this, "actionJumpBack")
-        ->setShortcut(QKeySequence(QKeyCombination(Qt::ShiftModifier, Qt::Key_Left)));
-    actionByName(this, "actionJumpForward")
-        ->setShortcut(QKeySequence(QKeyCombination(Qt::ShiftModifier, Qt::Key_Right)));
-    actionByName(this, "actionFullscreen")->setShortcut(QKeySequence(Qt::Key_F11));
+    auto configure = [this](const char* name, QList<QKeySequence> defaults) {
+        ShortcutEditorDialog::configureAction(actionByName(this, name), defaults);
+    };
 
-    auto* pause = new QShortcut(QKeySequence(Qt::Key_K), this);
-    pause->setContext(Qt::WindowShortcut);
-    connect(pause, &QShortcut::activated, controller_, &playback::PlaybackController::pause);
+    configure("actionOpen", {QKeySequence(QKeySequence::Open)});
+    configure("actionExit", {QKeySequence(QKeySequence::Quit)});
+    configure("actionPlayPause", {QKeySequence(Qt::Key_Space)});
+    configure("actionPause", {QKeySequence(Qt::Key_K)});
+    configure("actionStop", {QKeySequence(Qt::Key_S)});
+    configure("actionPreviousFrame", {
+        QKeySequence(Qt::Key_Left),
+        QKeySequence(Qt::Key_Comma),
+        QKeySequence(Qt::Key_J)});
+    configure("actionNextFrame", {
+        QKeySequence(Qt::Key_Right),
+        QKeySequence(Qt::Key_Period),
+        QKeySequence(Qt::Key_L)});
+    configure("actionPreviousKeyframe", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Left))});
+    configure("actionNextKeyframe", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_Right))});
+    configure("actionJumpBack", {
+        QKeySequence(QKeyCombination(Qt::ShiftModifier, Qt::Key_Left))});
+    configure("actionJumpForward", {
+        QKeySequence(QKeyCombination(Qt::ShiftModifier, Qt::Key_Right))});
+    configure("actionPreviousScene", {
+        QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_Left))});
+    configure("actionNextScene", {
+        QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_Right))});
+    configure("actionSetIn", {QKeySequence(Qt::Key_I)});
+    configure("actionSetOut", {QKeySequence(Qt::Key_O)});
+    configure("actionAddMarker", {QKeySequence(Qt::Key_M)});
+    configure("actionClearSelection", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_X))});
+    configure("actionTimelineZoomIn", {QKeySequence(QKeySequence::ZoomIn)});
+    configure("actionTimelineZoomOut", {QKeySequence(QKeySequence::ZoomOut)});
+    configure("actionTimelineShowAll", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_0))});
+    configure("actionFullscreen", {QKeySequence(Qt::Key_F11)});
 }
 
 int MainWindow::frameStepCount() const
@@ -511,6 +621,13 @@ void MainWindow::openFile()
     }
 
     settings.setValue(QStringLiteral("open/lastDirectory"), QFileInfo(path).absolutePath());
+
+    // Invalidate the old timeline synchronously. Any already-queued frame
+    // delivery is ignored until the new media lifecycle is established.
+    opening_ = true;
+    timeline_->setDuration(0);
+    updateSelectionStatus();
+    handleState(controller_->state());
     statusBar()->showMessage(tr("Opening %1...").arg(QFileInfo(path).fileName()));
     controller_->openFile(path);
 }
@@ -520,6 +637,11 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
     if (!info) {
         return;
     }
+
+    opening_ = false;
+    handleState(controller_->state());
+    timeline_->setDuration(static_cast<qint64>(info->duration.count()));
+    updateSelectionStatus();
 
     const QString fileName = pathToQString(info->path.filename());
     setWindowTitle(tr("%1 - VidScope").arg(fileName));
@@ -555,34 +677,47 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
 
 void MainWindow::handleFrame(media::DecodedFramePtr frame, const QImage& image)
 {
-    if (!frame || image.isNull()) {
+    if (opening_ || !frame || image.isNull()) {
         return;
     }
+    timeline_->observeFrame(*frame);
     viewport_->setFrame(image);
     updateFrameStatus(*frame);
+    updateSelectionStatus();
 }
 
 void MainWindow::handleState(playback::PlaybackState state)
 {
-    const bool hasMedia = state != playback::PlaybackState::Closed
+    const bool hasMedia = !opening_
+        && state != playback::PlaybackState::Closed
         && state != playback::PlaybackState::Error;
     const bool playing = state == playback::PlaybackState::Playing;
 
     if (auto* playPause = actionByName(this, "actionPlayPause")) {
         playPause->setEnabled(hasMedia);
         playPause->setText(playing ? tr("&Pause") : tr("&Play"));
-        playPause->setToolTip(playing ? tr("Pause (Space or K)") : tr("Play (Space or K)"));
+        playPause->setToolTip(playing ? tr("Pause (Space or K)") : tr("Play (Space)"));
         playPause->setIcon(style()->standardIcon(playing ? QStyle::SP_MediaPause
                                                         : QStyle::SP_MediaPlay));
     }
     for (const char* name : {
+             "actionPause",
              "actionStop",
              "actionPreviousFrame",
              "actionNextFrame",
              "actionJumpBack",
              "actionJumpForward",
              "actionPreviousKeyframe",
-             "actionNextKeyframe"}) {
+             "actionNextKeyframe",
+             "actionPreviousScene",
+             "actionNextScene",
+             "actionTimelineZoomIn",
+             "actionTimelineZoomOut",
+             "actionTimelineShowAll",
+             "actionSetIn",
+             "actionSetOut",
+             "actionClearSelection",
+             "actionAddMarker"}) {
         if (auto* action = actionByName(this, name)) {
             action->setEnabled(hasMedia);
         }
@@ -593,6 +728,8 @@ void MainWindow::handleState(playback::PlaybackState state)
 
 void MainWindow::showPlaybackError(const QString& title, const QString& detail)
 {
+    opening_ = false;
+    handleState(controller_->state());
     statusBar()->showMessage(title);
     QMessageBox::critical(this, title, detail);
 }
@@ -661,5 +798,64 @@ void MainWindow::updateFrameStatus(const media::DecodedFrame& frame)
             .arg(contentLight));
 }
 
-} // namespace vidscope::widgets
+void MainWindow::updateSelectionStatus()
+{
+    if (!timeline_ || !selectionStatus_ || !timeline_->model().selection()) {
+        if (selectionStatus_) {
+            selectionStatus_->setText(tr("Selection -"));
+            selectionStatus_->setToolTip({});
+        }
+        return;
+    }
 
+    const auto details = timeline_->model().selectionDetails();
+    const QString firstFrame = details.firstFrame && details.firstFrame->presentationIndex >= 0
+        ? QString::number(details.firstFrame->presentationIndex)
+        : QStringLiteral("?");
+    const QString lastFrame = details.lastFrame && details.lastFrame->presentationIndex >= 0
+        ? QString::number(details.lastFrame->presentationIndex)
+        : QStringLiteral("?");
+    const QString count = details.frameCount
+        ? tr("%1 frames").arg(*details.frameCount)
+        : tr("%1 known").arg(details.knownFrameCount);
+
+    selectionStatus_->setText(
+        tr("In %1 | Out %2 | %3")
+            .arg(formatTime(static_cast<qint64>(details.range.start.count())))
+            .arg(formatTime(static_cast<qint64>(details.range.end.count())))
+            .arg(count));
+    selectionStatus_->setToolTip(
+        tr("Frame %1 -> %2\n%3 -> %4\n%5\n"
+           "Counts use only exact decoded/indexed frame identities; no FPS estimate is used.")
+            .arg(firstFrame)
+            .arg(lastFrame)
+            .arg(formatTime(static_cast<qint64>(details.range.start.count())))
+            .arg(formatTime(static_cast<qint64>(details.range.end.count())))
+            .arg(count));
+}
+
+void MainWindow::seekAdjacentScene(const bool forward)
+{
+    if (!timeline_) {
+        return;
+    }
+    const auto target = timeline_->adjacentMarkerNanoseconds(
+        timeline::TimelineMarkerKind::Scene,
+        forward);
+    if (!target) {
+        statusBar()->showMessage(
+            forward ? tr("No next scene marker is available")
+                    : tr("No previous scene marker is available"),
+            3000);
+        return;
+    }
+    controller_->seekToNanoseconds(*target);
+}
+
+void MainWindow::showShortcutEditor()
+{
+    ShortcutEditorDialog dialog(findChildren<QAction*>(), this);
+    dialog.exec();
+}
+
+} // namespace vidscope::widgets

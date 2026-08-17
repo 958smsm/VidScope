@@ -16,6 +16,7 @@ extern "C" {
 namespace vidscope::media {
 
 [[nodiscard]] std::string ffmpegErrorString(int errorCode);
+void ensureFfmpegNetworkInitialized();
 
 class FfmpegError : public std::runtime_error {
 public:

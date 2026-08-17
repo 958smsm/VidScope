@@ -74,4 +74,21 @@ generate_fixture(
     -an -c:v ffv1 -level 3
 )
 
+generate_fixture(
+    multi_stream.mkv
+    -f lavfi -i "testsrc2=size=96x54:rate=10:duration=2"
+    -f lavfi -i "testsrc2=size=160x90:rate=10:duration=2"
+    -f lavfi -i "sine=frequency=1000:sample_rate=48000:duration=2"
+    -map 0:v:0 -map 1:v:0 -map 2:a:0
+    -c:v libx264 -preset ultrafast -g 10 -bf 0 -pix_fmt yuv420p
+    -c:a pcm_s16le
+    -disposition:v:0 default -disposition:v:1 0
+    -metadata:s:v:0 "title=Primary 96x54 video"
+    -metadata:s:v:1 "title=Secondary 160x90 video"
+)
 
+generate_fixture(
+    audio_only.mka
+    -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=1"
+    -vn -c:a pcm_s16le
+)

@@ -1,5 +1,7 @@
 #include "core/Logging.h"
+#include "media/FfmpegRaii.h"
 #include "playback/PlaybackController.h"
+#include "timeline/TimelineWidget.h"
 #include "widgets/MainWindow.h"
 
 #include <QtCore/QCommandLineOption>
@@ -12,34 +14,13 @@
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QStyleFactory>
 
+#include <chrono>
 #include <cstdlib>
-
-extern "C" {
-#include <libavformat/avformat.h>
-}
+#include <exception>
 
 namespace {
 
-class FfmpegNetworkLifetime final {
-public:
-    FfmpegNetworkLifetime()
-    {
-        initialized_ = avformat_network_init() >= 0;
-    }
-
-    ~FfmpegNetworkLifetime()
-    {
-        if (initialized_) {
-            avformat_network_deinit();
-        }
-    }
-
-    FfmpegNetworkLifetime(const FfmpegNetworkLifetime&) = delete;
-    FfmpegNetworkLifetime& operator=(const FfmpegNetworkLifetime&) = delete;
-
-private:
-    bool initialized_ = false;
-};
+using namespace std::chrono_literals;
 
 void installApplicationPalette(QApplication& application)
 {
@@ -75,24 +56,29 @@ int main(int argc, char* argv[])
     QApplication::setOrganizationDomain(QStringLiteral("vidscope.app"));
     QApplication::setApplicationName(QStringLiteral("VidScope"));
     QApplication::setApplicationDisplayName(QStringLiteral("VidScope"));
-    QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+    QApplication::setApplicationVersion(QStringLiteral("0.3.0"));
 
     vidscope::core::installLogging();
     vidscope::core::installFfmpegLogBridge();
-    FfmpegNetworkLifetime ffmpegNetwork;
+    try {
+        vidscope::media::ensureFfmpegNetworkInitialized();
+    } catch (const std::exception& exception) {
+        qCritical().noquote() << "Unable to initialize FFmpeg:" << exception.what();
+        return EXIT_FAILURE;
+    }
     installApplicationPalette(application);
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        QStringLiteral("Frame-accurate Qt and FFmpeg video inspection."));
+        QStringLiteral("Frame-accurate Qt and FFmpeg video inspection with a zoomable timeline."));
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption smokeTest(
         QStringLiteral("smoke-test"),
-        QStringLiteral("Construct and shut down the application for automated testing."));
+        QStringLiteral("Construct, exercise, and shut down the application for automated testing."));
     const QCommandLineOption mediaSmokeTest(
         QStringLiteral("media-smoke-test"),
-        QStringLiteral("Open a video and exit after its first decoded image reaches the UI."));
+        QStringLiteral("Open a video and exit after its first decoded image reaches the UI timeline."));
     parser.addOption(smokeTest);
     parser.addOption(mediaSmokeTest);
     parser.addPositionalArgument(QStringLiteral("video"), QStringLiteral("Video file to open."));
@@ -116,6 +102,14 @@ int main(int argc, char* argv[])
 
     auto* controller = window.findChild<vidscope::playback::PlaybackController*>(
         QStringLiteral("playbackController"));
+    auto* timeline = window.findChild<vidscope::timeline::TimelineWidget*>(
+        QStringLiteral("timelineWidget"));
+
+    if ((runImmediateSmoke || runMediaSmoke) && timeline == nullptr) {
+        qCritical() << "Smoke test could not find the Phase 3 timeline widget";
+        return EXIT_FAILURE;
+    }
+
     if (runMediaSmoke) {
         if (controller == nullptr) {
             qCritical() << "Media smoke test could not find the playback controller";
@@ -138,10 +132,18 @@ int main(int argc, char* argv[])
             controller,
             &vidscope::playback::PlaybackController::frameReady,
             &application,
-            [&application, &mediaSmokeTimeout, &mediaSmokeFinished](
+            [&application, &mediaSmokeTimeout, &mediaSmokeFinished, timeline](
                 const vidscope::media::DecodedFramePtr& frame,
                 const QImage& image) {
                 if (mediaSmokeFinished || !frame || image.isNull()) {
+                    return;
+                }
+                if (timeline == nullptr || !timeline->model().hasMedia()
+                    || timeline->model().knownFrameCount() == 0) {
+                    mediaSmokeFinished = true;
+                    mediaSmokeTimeout.stop();
+                    qCritical() << "Media smoke frame did not reach the Phase 3 timeline model";
+                    application.exit(EXIT_FAILURE);
                     return;
                 }
 
@@ -191,6 +193,21 @@ int main(int argc, char* argv[])
     }
 
     if (runImmediateSmoke) {
+        timeline->setDuration(vidscope::media::MediaTime{60s}.count());
+        timeline->setPosition(vidscope::media::MediaTime{30s}.count());
+        timeline->zoomIn();
+        timeline->setInPointAtPlayhead();
+        timeline->setPosition(vidscope::media::MediaTime{40s}.count());
+        timeline->setOutPointAtPlayhead();
+        const auto marker = timeline->addMarker(
+            vidscope::media::MediaTime{35s}.count(),
+            vidscope::timeline::TimelineMarkerKind::Bookmark,
+            QStringLiteral("smoke"));
+        if (!marker || !timeline->model().selection()
+            || timeline->model().isShowingEntireMedia()) {
+            qCritical() << "Phase 3 timeline smoke exercise failed";
+            return EXIT_FAILURE;
+        }
         QTimer::singleShot(0, &application, &QCoreApplication::quit);
     }
 

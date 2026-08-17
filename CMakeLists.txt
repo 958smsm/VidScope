@@ -6,8 +6,8 @@ endif()
 
 project(
     VidScope
-    VERSION 0.1.0
-    DESCRIPTION "Frame-accurate professional video inspection foundation"
+    VERSION 0.3.0
+    DESCRIPTION "Frame-accurate professional video inspection with a custom timeline"
     LANGUAGES CXX
 )
 
@@ -26,6 +26,13 @@ list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Widgets)
 find_package(FFmpeg REQUIRED COMPONENTS avformat avcodec avutil swscale swresample)
 
+if(VIDSCOPE_BUILD_TESTS)
+    include(CTest)
+    if(BUILD_TESTING)
+        find_package(Qt6 6.6 REQUIRED COMPONENTS Test)
+    endif()
+endif()
+
 add_library(vidscope_engine STATIC)
 target_sources(
     vidscope_engine
@@ -41,6 +48,7 @@ target_sources(
         app/playback/PlaybackController.cpp
         app/playback/PlaybackSession.cpp
         app/playback/SeekController.cpp
+        app/timeline/TimelineModel.cpp
     PUBLIC
         FILE_SET HEADERS
         BASE_DIRS app
@@ -58,6 +66,7 @@ target_sources(
             app/playback/PlaybackController.h
             app/playback/PlaybackSession.h
             app/playback/SeekController.h
+            app/timeline/TimelineModel.h
 )
 
 target_link_libraries(
@@ -74,19 +83,28 @@ target_link_libraries(
 target_include_directories(vidscope_engine PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/app>")
 target_compile_definitions(vidscope_engine PRIVATE QT_NO_CAST_FROM_ASCII QT_NO_CAST_TO_ASCII)
 
-qt_add_executable(VidScope WIN32)
+add_library(vidscope_ui STATIC)
 target_sources(
-    VidScope
+    vidscope_ui
     PRIVATE
-        app/main.cpp
         app/render/VideoViewport.cpp
-        app/render/VideoViewport.h
+        app/timeline/TimelineWidget.cpp
         app/widgets/MainWindow.cpp
-        app/widgets/MainWindow.h
-        app/widgets/SeekBar.cpp
-        app/widgets/SeekBar.h
+        app/widgets/ShortcutEditorDialog.cpp
+    PUBLIC
+        FILE_SET HEADERS
+        BASE_DIRS app
+        FILES
+            app/render/VideoViewport.h
+            app/timeline/TimelineWidget.h
+            app/widgets/MainWindow.h
+            app/widgets/ShortcutEditorDialog.h
 )
-target_link_libraries(VidScope PRIVATE vidscope_engine Qt6::Widgets)
+target_link_libraries(vidscope_ui PUBLIC vidscope_engine Qt6::Widgets)
+target_include_directories(vidscope_ui PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/app>")
+
+qt_add_executable(VidScope WIN32 app/main.cpp)
+target_link_libraries(VidScope PRIVATE vidscope_ui)
 
 function(vidscope_enable_warnings target)
     if(MSVC)
@@ -98,6 +116,7 @@ function(vidscope_enable_warnings target)
 endfunction()
 
 vidscope_enable_warnings(vidscope_engine)
+vidscope_enable_warnings(vidscope_ui)
 vidscope_enable_warnings(VidScope)
 
 if(WIN32 AND VIDSCOPE_DEPLOY_RUNTIME)
@@ -129,11 +148,6 @@ endif()
 include(GNUInstallDirs)
 install(TARGETS VidScope RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" BUNDLE DESTINATION .)
 
-if(VIDSCOPE_BUILD_TESTS)
-    include(CTest)
-    if(BUILD_TESTING)
-        add_subdirectory(tests)
-    endif()
+if(VIDSCOPE_BUILD_TESTS AND BUILD_TESTING)
+    add_subdirectory(tests)
 endif()
-
-

@@ -205,6 +205,7 @@ private:
         media::FrameConverter converter;
         media::DecodedFramePtr publishedFrame;
         std::optional<PendingFrame> pendingFrame;
+        std::uint64_t lifecycleEpoch = 0;
         bool clockValid = false;
         SteadyClock::time_point clockWall{};
         media::MediaTime clockMedia{};
@@ -252,10 +253,14 @@ private:
         } else {
             command.deliveryEpoch = deliveryEpoch_->load(std::memory_order_acquire);
         }
-        if (command.type == CommandType::Open) {
-            command.lifecycleEpoch = lifecycleEpoch_->fetch_add(1, std::memory_order_acq_rel) + 1;
-        } else {
-            command.lifecycleEpoch = lifecycleEpoch_->load(std::memory_order_acquire);
+        {
+            std::lock_guard lifecycleLock(lifecycleMutex_);
+            if (command.type == CommandType::Open) {
+                command.lifecycleEpoch =
+                    lifecycleEpoch_->fetch_add(1, std::memory_order_acq_rel) + 1;
+            } else {
+                command.lifecycleEpoch = lifecycleEpoch_->load(std::memory_order_acquire);
+            }
         }
 
         std::lock_guard lock(commandMutex_);
@@ -386,6 +391,34 @@ private:
             owner_,
             [owner = owner_, state] { emit owner->stateChanged(state); },
             Qt::QueuedConnection);
+    }
+
+    [[nodiscard]] bool transitionToFailureState(
+        const std::uint64_t operationLifecycleEpoch)
+    {
+        PlaybackState previous;
+        {
+            std::lock_guard lifecycleLock(lifecycleMutex_);
+            if (lifecycleEpoch_->load(std::memory_order_acquire)
+                != operationLifecycleEpoch) {
+                return false;
+            }
+            previous = state_.exchange(PlaybackState::Error, std::memory_order_acq_rel);
+        }
+
+        if (previous != PlaybackState::Error) {
+            const auto gate = lifecycleEpoch_;
+            QMetaObject::invokeMethod(
+                owner_,
+                [owner = owner_, gate, operationLifecycleEpoch] {
+                    if (gate->load(std::memory_order_acquire)
+                        == operationLifecycleEpoch) {
+                        emit owner->stateChanged(PlaybackState::Error);
+                    }
+                },
+                Qt::QueuedConnection);
+        }
+        return true;
     }
 
     void postMediaOpened(media::MediaInfoPtr info, std::uint64_t lifecycleEpoch)
@@ -576,10 +609,12 @@ private:
 
     void resetClock(WorkerContext& context)
     {
-        context.clockValid = static_cast<bool>(context.publishedFrame);
+        context.clockValid = context.publishedFrame
+            && context.publishedFrame->presentationTime != media::kNoMediaTime;
         context.clockWall = SteadyClock::now();
-        context.clockMedia = context.publishedFrame ? context.publishedFrame->presentationTime
-                                                    : media::MediaTime{};
+        context.clockMedia = context.clockValid
+            ? context.publishedFrame->presentationTime
+            : media::MediaTime{};
     }
 
     [[nodiscard]] media::MediaTime fallbackFrameDuration(const WorkerContext& context) const
@@ -593,26 +628,56 @@ private:
         return std::chrono::milliseconds(40);
     }
 
+    [[nodiscard]] media::MediaTime boundedSchedulingDuration(
+        const WorkerContext& context) const
+    {
+        constexpr auto kDefaultDuration = std::chrono::milliseconds(40);
+        constexpr auto kMaximumSaneDuration = std::chrono::hours(24);
+
+        auto duration = context.publishedFrame
+            ? context.publishedFrame->duration
+            : media::MediaTime::zero();
+        if (duration <= media::MediaTime::zero()) {
+            duration = fallbackFrameDuration(context);
+        }
+        if (duration <= media::MediaTime::zero()
+            || duration > kMaximumSaneDuration) {
+            return kDefaultDuration;
+        }
+        return duration;
+    }
+
     [[nodiscard]] SteadyClock::time_point pendingDeadline(const WorkerContext& context) const
     {
-        if (!context.clockValid || !context.publishedFrame || !context.pendingFrame) {
+        if (!context.publishedFrame || !context.pendingFrame
+            || !context.pendingFrame->frame) {
             return SteadyClock::now();
+        }
+
+        const auto frameDuration = boundedSchedulingDuration(context);
+        const auto fallbackDeadline = [&] {
+            return SteadyClock::now()
+                + std::chrono::duration_cast<SteadyClock::duration>(frameDuration);
+        };
+        if (!context.clockValid
+            || context.clockMedia == media::kNoMediaTime
+            || context.publishedFrame->presentationTime == media::kNoMediaTime
+            || context.pendingFrame->frame->presentationTime == media::kNoMediaTime) {
+            return fallbackDeadline();
         }
 
         auto mediaOffset = context.pendingFrame->frame->presentationTime - context.clockMedia;
         if (mediaOffset <= media::MediaTime::zero()) {
-            auto duration = context.publishedFrame->duration;
-            if (duration <= media::MediaTime::zero()) {
-                duration = fallbackFrameDuration(context);
-            }
-            mediaOffset = (context.publishedFrame->presentationTime - context.clockMedia) + duration;
+            mediaOffset = (context.publishedFrame->presentationTime - context.clockMedia)
+                + frameDuration;
         }
 
         constexpr auto kMaximumSaneOffset = std::chrono::hours(24);
         if (mediaOffset < media::MediaTime::zero() || mediaOffset > kMaximumSaneOffset) {
-            mediaOffset = fallbackFrameDuration(context);
+            return fallbackDeadline();
         }
-        return context.clockWall + mediaOffset;
+        return context.clockWall
+            + std::chrono::duration_cast<SteadyClock::duration>(mediaOffset);
     }
 
     [[nodiscard]] bool preparePlaybackFrame(
@@ -692,6 +757,7 @@ private:
             context.session.close();
             postMediaClosed(command.lifecycleEpoch);
         }
+        context.lifecycleEpoch = command.lifecycleEpoch;
         setState(PlaybackState::Closed);
 
         const auto cancellation = beginOperation(CommandType::Open, command.generation);
@@ -711,11 +777,13 @@ private:
         const auto* sourceInfo = context.session.mediaInfo();
         if (!sourceInfo) {
             endOperation(cancellation);
-            setState(PlaybackState::Error);
-            postError(
-                QStringLiteral("Unable to open media"),
-                QStringLiteral("No decodable video stream was found in the selected file."),
-                command.lifecycleEpoch);
+            if (transitionToFailureState(command.lifecycleEpoch)) {
+                postError(
+                    QStringLiteral("Unable to open media"),
+                    QStringLiteral(
+                        "No decodable video stream was found in the selected file."),
+                    command.lifecycleEpoch);
+            }
             return;
         }
 
@@ -748,11 +816,13 @@ private:
         } else if (result.status == NavigationStatus::EndOfStream) {
             setState(PlaybackState::Ended);
         } else if (result.status != NavigationStatus::Cancelled) {
-            setState(PlaybackState::Error);
-            postError(
-                QStringLiteral("Unable to decode media"),
-                QStringLiteral("The video stream opened, but its first frame could not be decoded."),
-                command.lifecycleEpoch);
+            if (transitionToFailureState(command.lifecycleEpoch)) {
+                postError(
+                    QStringLiteral("Unable to decode media"),
+                    QStringLiteral(
+                        "The video stream opened, but its first frame could not be decoded."),
+                    command.lifecycleEpoch);
+            }
         }
     }
 
@@ -962,7 +1032,10 @@ private:
         }
     }
 
-    void handleFailure(WorkerContext& context, const std::exception& exception)
+    void handleFailure(
+        WorkerContext& context,
+        const std::exception& exception,
+        const std::uint64_t operationLifecycleEpoch)
     {
         qCCritical(logPlayer) << "Playback worker failure:" << exception.what();
         context.pendingFrame.reset();
@@ -970,13 +1043,25 @@ private:
         context.clockValid = false;
         context.converter.reset();
         context.session.close();
-        setState(PlaybackState::Error);
-        const auto lifecycle = lifecycleEpoch_->load(std::memory_order_acquire);
-        postMediaClosed(lifecycle);
-        postError(QStringLiteral("Playback error"), exceptionDetail(exception), lifecycle);
+        context.lifecycleEpoch = 0;
+
+        if (!transitionToFailureState(operationLifecycleEpoch)) {
+            qCInfo(logPlayer)
+                << "Suppressed failure notification from superseded media lifecycle"
+                << operationLifecycleEpoch;
+            return;
+        }
+
+        postMediaClosed(operationLifecycleEpoch);
+        postError(
+            QStringLiteral("Playback error"),
+            exceptionDetail(exception),
+            operationLifecycleEpoch);
     }
 
-    void handleUnknownFailure(WorkerContext& context)
+    void handleUnknownFailure(
+        WorkerContext& context,
+        const std::uint64_t operationLifecycleEpoch)
     {
         qCCritical(logPlayer) << "Playback worker failed with an unknown exception";
         context.pendingFrame.reset();
@@ -984,13 +1069,20 @@ private:
         context.clockValid = false;
         context.converter.reset();
         context.session.close();
-        setState(PlaybackState::Error);
-        const auto lifecycle = lifecycleEpoch_->load(std::memory_order_acquire);
-        postMediaClosed(lifecycle);
+        context.lifecycleEpoch = 0;
+
+        if (!transitionToFailureState(operationLifecycleEpoch)) {
+            qCInfo(logPlayer)
+                << "Suppressed unknown failure notification from superseded media lifecycle"
+                << operationLifecycleEpoch;
+            return;
+        }
+
+        postMediaClosed(operationLifecycleEpoch);
         postError(
             QStringLiteral("Playback error"),
             QStringLiteral("An unexpected error occurred while decoding the video."),
-            lifecycle);
+            operationLifecycleEpoch);
     }
 
     void run(std::stop_token stop, PlaybackSessionConfig config)
@@ -1004,24 +1096,25 @@ private:
                 try {
                     handleCommand(context, command);
                 } catch (const std::exception& exception) {
-                    handleFailure(context, exception);
+                    handleFailure(context, exception, command.lifecycleEpoch);
                 } catch (...) {
-                    handleUnknownFailure(context);
+                    handleUnknownFailure(context, command.lifecycleEpoch);
                 }
                 continue;
             }
 
             if (state() == PlaybackState::Playing && context.session.isOpen()) {
                 const auto generation = nextGeneration_.load(std::memory_order_acquire);
+                const auto operationLifecycleEpoch = context.lifecycleEpoch;
                 try {
                     if (!preparePlaybackFrame(context, generation)) {
                         continue;
                     }
                 } catch (const std::exception& exception) {
-                    handleFailure(context, exception);
+                    handleFailure(context, exception, operationLifecycleEpoch);
                     continue;
                 } catch (...) {
-                    handleUnknownFailure(context);
+                    handleUnknownFailure(context, operationLifecycleEpoch);
                     continue;
                 }
 
@@ -1043,9 +1136,9 @@ private:
                         generation,
                         deliveryEpoch_->load(std::memory_order_acquire));
                 } catch (const std::exception& exception) {
-                    handleFailure(context, exception);
+                    handleFailure(context, exception, operationLifecycleEpoch);
                 } catch (...) {
-                    handleUnknownFailure(context);
+                    handleUnknownFailure(context, operationLifecycleEpoch);
                 }
                 continue;
             }
@@ -1076,6 +1169,7 @@ private:
     std::shared_ptr<std::atomic_uint64_t> lifecycleEpoch_;
     std::shared_ptr<FrameDeliveryState> frameDelivery_;
 
+    mutable std::mutex lifecycleMutex_;
     mutable std::mutex commandMutex_;
     std::condition_variable commandReady_;
     std::deque<Command> commands_;
