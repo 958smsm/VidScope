@@ -2,6 +2,8 @@
 
 #include "render/VideoViewport.h"
 #include "timeline/TimelineWidget.h"
+#include "thumbnails/ThumbnailManager.h"
+#include "widgets/HoverPreviewController.h"
 #include "widgets/ShortcutEditorDialog.h"
 
 #include <QtCore/QDir>
@@ -127,6 +129,15 @@ MainWindow::MainWindow(QWidget* parent)
     createMenus();
     createShortcuts();
 
+    thumbnailManager_ = new thumbnails::ThumbnailManager({}, this);
+    thumbnailManager_->setObjectName(QStringLiteral("thumbnailManager"));
+    hoverPreviewController_ = new HoverPreviewController(
+        timeline_,
+        thumbnailManager_,
+        this,
+        {},
+        this);
+
     connect(controller_, &playback::PlaybackController::mediaOpened,
             this, &MainWindow::handleMediaOpened);
     connect(controller_, &playback::PlaybackController::frameReady,
@@ -136,6 +147,8 @@ MainWindow::MainWindow(QWidget* parent)
     connect(controller_, &playback::PlaybackController::errorOccurred,
             this, &MainWindow::showPlaybackError);
     connect(controller_, &playback::PlaybackController::mediaClosed, this, [this] {
+        hoverPreviewController_->clear();
+        thumbnailManager_->clearMedia();
         viewport_->clearFrame();
         timeline_->setDuration(0);
         mediaStatus_->setText(tr("No media loaded"));
@@ -181,6 +194,20 @@ MainWindow::MainWindow(QWidget* parent)
                             .arg(cachedFrames));
                 }
             });
+    connect(
+        thumbnailManager_,
+        &thumbnails::ThumbnailManager::cacheStatsChanged,
+        this,
+        [this](quint64 memoryHits, quint64 diskHits, quint64 misses, qsizetype memoryEntries) {
+            if (auto* metrics = findChild<QLabel*>(QStringLiteral("metricsLabel"))) {
+                metrics->setToolTip(
+                    tr("Thumbnail cache: %1 memory hits, %2 disk hits, %3 misses, %4 memory entries")
+                        .arg(memoryHits)
+                        .arg(diskHits)
+                        .arg(misses)
+                        .arg(memoryEntries));
+            }
+        });
     connect(timeline_, &timeline::TimelineWidget::seekRequested,
             controller_, &playback::PlaybackController::seekToNanoseconds);
     connect(timeline_, &timeline::TimelineWidget::scrubbingChanged, this, [this](bool active) {
@@ -209,7 +236,11 @@ MainWindow::~MainWindow()
     QSettings settings;
     settings.setValue(QStringLiteral("mainWindow/geometry"), saveGeometry());
 
-    // Join the decode worker while all GUI receivers are still alive.
+    // Join all decode workers while their GUI receivers are still alive.
+    delete hoverPreviewController_;
+    hoverPreviewController_ = nullptr;
+    delete thumbnailManager_;
+    thumbnailManager_ = nullptr;
     delete controller_;
     controller_ = nullptr;
 }
@@ -622,8 +653,10 @@ void MainWindow::openFile()
 
     settings.setValue(QStringLiteral("open/lastDirectory"), QFileInfo(path).absolutePath());
 
-    // Invalidate the old timeline synchronously. Any already-queued frame
-    // delivery is ignored until the new media lifecycle is established.
+    // Invalidate old playback and preview generations synchronously. Any
+    // already-queued delivery is ignored until the new media lifecycle exists.
+    hoverPreviewController_->clear();
+    thumbnailManager_->clearMedia();
     opening_ = true;
     timeline_->setDuration(0);
     updateSelectionStatus();
@@ -639,6 +672,7 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
     }
 
     opening_ = false;
+    thumbnailManager_->setMedia(info);
     handleState(controller_->state());
     timeline_->setDuration(static_cast<qint64>(info->duration.count()));
     updateSelectionStatus();

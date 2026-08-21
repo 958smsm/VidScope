@@ -1,24 +1,27 @@
-# VidScope Phase 0-3 architecture
+# VidScope Phase 0-4 architecture
 
-VidScope is a C++20, Qt 6, direct-FFmpeg video inspection application. Phase 3
-adds the custom timeline and its interaction model without weakening the
-frame-accurate playback, timestamp, ownership, or thread boundaries established
-in Phase 2.
+VidScope is a C++20, Qt 6.11.2, direct-FFmpeg video inspection application.
+Phase 4 adds asynchronous decoded hover previews without weakening the
+frame-accurate playback, timestamp, ownership, timeline, or thread boundaries
+established in Phases 2 and 3.
 
 ## Dependency direction
 
 ```text
-MainWindow / TimelineWidget / VideoViewport
-        |                |
-        |                +-> TimelineModel (GUI-owned state and transforms)
-        |
-PlaybackController (Qt adapter, GUI-thread API)
-        |
-PlaybackSession (single decode-worker confinement)
-        |
-MediaSource -> Demuxer -> VideoDecoder
-        |
-      FFmpeg
+MainWindow / TimelineWidget / VideoViewport / HoverPreviewPopup
+        |                |                    |
+        |                |                    +-> HoverPreviewController
+        |                |                              |
+        |                +-> TimelineModel              +-> ThumbnailManager
+        |                    (GUI-owned state)                    |
+        |                                                ThumbnailScheduler
+PlaybackController (Qt adapter, GUI-thread API)                   |
+        |                                                reusable worker pool
+PlaybackSession (single playback-worker confinement)              |
+        |                                                PlaybackSession(s)
+MediaSource -> Demuxer -> VideoDecoder                             |
+        |                                                        |
+      FFmpeg <----------------------------------------------------+
 ```
 
 `TimelineWidget` never calls FFmpeg. It owns a `TimelineModel`, turns pointer
@@ -31,6 +34,13 @@ generation-based, coalescing worker boundary.
 It is explicitly GUI-thread-owned, so it needs no internal locks. All
 pixel/time conversion, viewport state, observed frame boundaries, markers, and
 selection semantics live there instead of being duplicated in event handlers.
+
+`ThumbnailManager` is a separate application service. Timeline hover signals
+contain only the mapped timestamp, nearest established presentation-index hint,
+and global cursor position. The manager owns no widget; it snapshots the media
+epoch, checks memory cache on the GUI thread, and sends misses to a bounded
+priority scheduler. `HoverPreviewController` owns debounce and popup state, and
+only touches QWidget objects on the GUI thread.
 
 ## Ownership and lifetime
 
@@ -49,6 +59,16 @@ selection semantics live there instead of being duplicated in event handlers.
 - `PlaybackController` cancels active work, requests stop, wakes its condition
   variable, joins its worker, and only then destroys converter/session/FFmpeg
   state.
+- Each thumbnail worker owns one reusable, thread-confined `PlaybackSession` and
+  `FrameConverter`. A media epoch change cancels active jobs, wakes the pool,
+  closes each old session, and prevents old queued delivery from being accepted.
+- `ThumbnailCache` owns its memory-LRU entries and versioned disk representation.
+  Cached `QImage` values are implicitly shared across queued delivery. Memory-LRU
+  mutation and disk serialization use separate locks, so a GUI-thread memory hit
+  cannot wait behind image encoding, file I/O, or disk pruning.
+- `HoverPreviewController` explicitly deletes its top-level tooltip popup before
+  its anchor window is destroyed. `MainWindow` destroys hover coordination and
+  thumbnail workers before the playback controller.
 
 ## Timestamp and identity invariants
 
@@ -138,6 +158,15 @@ worker; QWidget access stays on the GUI thread. Playback scheduling rejects the
 `kNoMediaTime` sentinel before arithmetic and falls back to a bounded actual,
 nominal, or 40 ms frame duration when presentation time is unavailable.
 
+Thumbnail work is independent from playback work. The shared scheduler has a
+hard pending-job bound and explicit priority lanes; hover supersedes stale
+interactive and background work. The default two-worker pool has independent
+bounded frame caches and forward queues. The shared thumbnail memory cache and
+disk cache are byte-bounded. Disk lookup, decode, scaling, and cache writes run
+outside the GUI thread; only a final generation/epoch validation and signal
+emission run on it. `std::stop_callback`, condition notification, cancellation
+sources, and `std::jthread` joins provide deterministic pool shutdown.
+
 Timeline known-frame metadata defaults to a hard 100,000-entry cap and uses
 deque storage plus a presentation-index location map for efficient append,
 lookup, and endpoint eviction. At the frame cap, the model evicts the temporal
@@ -159,17 +188,20 @@ retry the CPU decoder, so correctness does not depend on GPU availability.
 
 ## Phase boundary
 
-Phase 3 includes the custom painted timeline, timestamp mapping, viewport,
-anchor zoom, horizontal pan, playhead, seek/scrub interaction, hover
-coordinates, timestamp and exact published-frame ticks, bounded marker layers,
-In/Out selection infrastructure, remappable commands, and tests. Frame and
-keyframe coverage grows from exact frames delivered to the GUI; Phase 3 does
-not perform a full-file pre-index. Its timeline also currently requires a
-positive declared media duration rather than growing an initially unknown
-extent.
+Phase 4 includes the custom timeline plus asynchronous decoded hover previews:
+a bounded priority scheduler, reusable decoder workers, request generations,
+active cancellation, memory/disk cache, cursor-following popup, application and
+screen geometry clamping, exact decoded-frame metadata, and double-checked
+stale-result prevention. It does not create a decoder per cursor event and does
+not share the playback decoder.
 
-Phase 4+ owns decoded hover-preview scheduling and popup imagery, thumbnail
-workers and caches, filmstrips, progressive analysis, motion/similarity/scene
-heatmaps, automatic scene and duplicate/freeze detection, selection consumers
-such as loop/analyze/export/contact sheet, inspection, and export. No fake
-thumbnail, preview, scene, or analysis values are generated by Phase 3.
+The hover popup exposes optional motion and similarity fields but displays them
+as unavailable until the real analysis pipeline exists. Phase 4 performs no
+full-video preprocessing, hidden indexing, or fake score generation. Known
+frame and keyframe coverage in the timeline still grows from exact frames
+published by playback.
+
+Phase 5+ owns configurable filmstrip population, progressive analysis,
+motion/similarity/scene heatmaps and LOD, automatic scene/duplicate/freeze
+detection, selection consumers, inspection, audio rendering/A-V sync, and
+export.

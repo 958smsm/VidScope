@@ -17,7 +17,13 @@ namespace vidscope::timeline {
 class TimelineWidget;
 }
 
+namespace vidscope::thumbnails {
+class ThumbnailManager;
+}
+
 namespace vidscope::widgets {
+
+class HoverPreviewController;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -46,6 +52,8 @@ private:
 
     bool opening_ = false;
     playback::PlaybackController* controller_ = nullptr;
+    thumbnails::ThumbnailManager* thumbnailManager_ = nullptr;
+    HoverPreviewController* hoverPreviewController_ = nullptr;
     render::VideoViewport* viewport_ = nullptr;
     timeline::TimelineWidget* timeline_ = nullptr;
     QLabel* frameStatus_ = nullptr;

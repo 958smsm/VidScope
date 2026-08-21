@@ -153,6 +153,7 @@ void TimelineWidget::setDuration(qint64 nanoseconds)
     if (hoverActive_) {
         hoverActive_ = false;
         emit hoverChanged(hoveredTime_, -1, false);
+        emit hoverPreviewChanged(hoveredTime_, -1, QPoint{}, false);
     }
 
     model_.reset(duration);
@@ -427,27 +428,29 @@ void TimelineWidget::emitSelectionChanged()
         true);
 }
 
-void TimelineWidget::updateHover(qreal x)
+void TimelineWidget::updateHover(QPointF position)
 {
     const auto track = timelineRect();
-    if (!model_.hasMedia() || !track.contains(QPointF(x, track.center().y()))) {
+    if (!model_.hasMedia() || !track.contains(position)) {
         if (hoverActive_) {
             hoverActive_ = false;
             emit hoverChanged(hoveredTime_, -1, false);
+            emit hoverPreviewChanged(hoveredTime_, -1, QPoint{}, false);
         }
         return;
     }
 
-    const auto time = timeAtX(x);
+    const auto time = timeAtX(position.x());
+    const auto presentationIndex = nearestKnownPresentationIndex(media::MediaTime(time));
+    const QPoint globalPosition = mapToGlobal(position.toPoint());
     if (hoverActive_ && hoveredTime_ == time) {
+        emit hoverPreviewChanged(time, presentationIndex, globalPosition, true);
         return;
     }
     hoveredTime_ = time;
     hoverActive_ = true;
-    emit hoverChanged(
-        hoveredTime_,
-        nearestKnownPresentationIndex(media::MediaTime(hoveredTime_)),
-        true);
+    emit hoverChanged(hoveredTime_, presentationIndex, true);
+    emit hoverPreviewChanged(hoveredTime_, presentationIndex, globalPosition, true);
 }
 
 void TimelineWidget::updateScrub(qreal x, bool force)
@@ -813,7 +816,7 @@ void TimelineWidget::mousePressEvent(QMouseEvent* event)
 
 void TimelineWidget::mouseMoveEvent(QMouseEvent* event)
 {
-    updateHover(event->position().x());
+    updateHover(event->position());
 
     switch (interaction_) {
     case InteractionMode::Scrub:
@@ -904,6 +907,7 @@ void TimelineWidget::leaveEvent(QEvent* event)
     if (hoverActive_) {
         hoverActive_ = false;
         emit hoverChanged(hoveredTime_, -1, false);
+        emit hoverPreviewChanged(hoveredTime_, -1, QPoint{}, false);
     }
     QWidget::leaveEvent(event);
 }
@@ -964,7 +968,7 @@ void TimelineWidget::wheelEvent(QWheelEvent* event)
         }
     }
 
-    updateHover(x);
+    updateHover(event->position());
     event->accept();
 }
 

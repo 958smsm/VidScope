@@ -3,6 +3,7 @@
 #include "core/Cancellation.h"
 #include "media/MediaTypes.h"
 
+#include <QtCore/QSize>
 #include <QtGui/QImage>
 
 #include <memory>
@@ -18,6 +19,10 @@ public:
 
     [[nodiscard]] QImage toBgraImage(
         const DecodedFrame& frame,
+        core::CancellationToken cancellation = {});
+    [[nodiscard]] QImage toBgraImage(
+        const DecodedFrame& frame,
+        QSize outputSize,
         core::CancellationToken cancellation = {});
     void reset() noexcept;
 

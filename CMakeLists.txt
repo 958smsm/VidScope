@@ -6,8 +6,8 @@ endif()
 
 project(
     VidScope
-    VERSION 0.3.0
-    DESCRIPTION "Frame-accurate professional video inspection with a custom timeline"
+    VERSION 0.4.0
+    DESCRIPTION "Frame-accurate professional video inspection with asynchronous hover previews"
     LANGUAGES CXX
 )
 
@@ -23,13 +23,13 @@ set(CMAKE_AUTORCC ON)
 
 list(PREPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-find_package(Qt6 6.6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 6.11.2 EXACT REQUIRED COMPONENTS Core Gui Widgets)
 find_package(FFmpeg REQUIRED COMPONENTS avformat avcodec avutil swscale swresample)
 
 if(VIDSCOPE_BUILD_TESTS)
     include(CTest)
     if(BUILD_TESTING)
-        find_package(Qt6 6.6 REQUIRED COMPONENTS Test)
+        find_package(Qt6 6.11.2 EXACT REQUIRED COMPONENTS Test)
     endif()
 endif()
 
@@ -48,6 +48,9 @@ target_sources(
         app/playback/PlaybackController.cpp
         app/playback/PlaybackSession.cpp
         app/playback/SeekController.cpp
+        app/thumbnails/ThumbnailCache.cpp
+        app/thumbnails/ThumbnailManager.cpp
+        app/thumbnails/ThumbnailScheduler.cpp
         app/timeline/TimelineModel.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -66,6 +69,10 @@ target_sources(
             app/playback/PlaybackController.h
             app/playback/PlaybackSession.h
             app/playback/SeekController.h
+            app/thumbnails/ThumbnailCache.h
+            app/thumbnails/ThumbnailManager.h
+            app/thumbnails/ThumbnailScheduler.h
+            app/thumbnails/ThumbnailTypes.h
             app/timeline/TimelineModel.h
 )
 
@@ -89,6 +96,8 @@ target_sources(
     PRIVATE
         app/render/VideoViewport.cpp
         app/timeline/TimelineWidget.cpp
+        app/widgets/HoverPreviewController.cpp
+        app/widgets/HoverPreviewPopup.cpp
         app/widgets/MainWindow.cpp
         app/widgets/ShortcutEditorDialog.cpp
     PUBLIC
@@ -97,6 +106,8 @@ target_sources(
         FILES
             app/render/VideoViewport.h
             app/timeline/TimelineWidget.h
+            app/widgets/HoverPreviewController.h
+            app/widgets/HoverPreviewPopup.h
             app/widgets/MainWindow.h
             app/widgets/ShortcutEditorDialog.h
 )

@@ -13,7 +13,7 @@
       "binaryDir": "${sourceDir}/build/windows-msvc",
       "cacheVariables": {
         "CMAKE_MAKE_PROGRAM": "D:/dev/Qt/Tools/Ninja/ninja.exe",
-        "CMAKE_PREFIX_PATH": "D:/dev/Qt/6.10.0/msvc2022_64",
+        "CMAKE_PREFIX_PATH": "D:/dev/Qt/6.11.2/msvc2022_64",
         "FFMPEG_ROOT": "D:/dev/ffmpeg-master-latest-win64-gpl-shared",
         "BUILD_TESTING": "ON",
         "VIDSCOPE_BUILD_TESTS": "ON",

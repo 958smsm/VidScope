@@ -14,7 +14,7 @@ the directory structure and dependency direction documented in
 - CMake 4.1.2
 - Visual Studio Enterprise 2026 / MSVC 14.50.35717
 - Ninja from `D:\dev\Qt\Tools\Ninja\ninja.exe`
-- Qt 6.10.0, MSVC 2022 x64 package
+- Qt 6.11.2, MSVC 2022 x64 package
 - FFmpeg shared development build N-118472 (libavformat/libavcodec 61,
   libavutil 59), including D3D11VA/DXVA2 and GPL codecs
 

@@ -5,6 +5,8 @@ add_executable(
     unit/FrameCacheTests.cpp
     unit/FrameQueueTests.cpp
     unit/SeekControllerTests.cpp
+    unit/ThumbnailCacheTests.cpp
+    unit/ThumbnailSchedulerTests.cpp
     unit/TimelineModelTests.cpp
     unit/TimestampTests.cpp
     unit/VisibleImageTests.cpp
@@ -16,7 +18,7 @@ add_test(NAME vidscope.unit COMMAND vidscope_unit_tests)
 set_tests_properties(
     vidscope.unit
     PROPERTIES
-        LABELS "phase1;phase2;phase3;unit"
+        LABELS "phase1;phase2;phase3;phase4;unit"
         TIMEOUT 120
 )
 
@@ -122,6 +124,24 @@ target_link_libraries(
         Qt6::Test
 )
 vidscope_enable_warnings(vidscope_timeline_end_to_end_tests)
+
+add_executable(
+    vidscope_phase4_hover_preview_tests
+    TestHarness.h
+    integration/Phase4HoverPreviewTests.cpp
+)
+target_include_directories(
+    vidscope_phase4_hover_preview_tests
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+target_link_libraries(
+    vidscope_phase4_hover_preview_tests
+    PRIVATE
+        vidscope_ui
+        Qt6::Test
+)
+vidscope_enable_warnings(vidscope_phase4_hover_preview_tests)
 
 function(vidscope_configure_test_runtime test_name)
     if(NOT WIN32)
@@ -284,6 +304,21 @@ if(FFmpeg_EXECUTABLE)
     vidscope_configure_test_runtime(vidscope.timeline_end_to_end)
 
     add_test(
+        NAME vidscope.phase4_hover_preview
+        COMMAND vidscope_phase4_hover_preview_tests "${_vidscope_fixture_dir}"
+    )
+    set_tests_properties(
+        vidscope.phase4_hover_preview
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase4;media;ui;thumbnail"
+            RESOURCE_LOCK VidScopeGuiMedia
+            TIMEOUT 120
+    )
+    vidscope_configure_offscreen_test(vidscope.phase4_hover_preview)
+    vidscope_configure_test_runtime(vidscope.phase4_hover_preview)
+
+    add_test(
         NAME vidscope.ui_media_smoke
         COMMAND VidScope --media-smoke-test "${_vidscope_fixture_dir}/cfr_bframes.mp4"
     )
@@ -291,7 +326,7 @@ if(FFmpeg_EXECUTABLE)
         vidscope.ui_media_smoke
         PROPERTIES
             FIXTURES_REQUIRED VidScopeMedia
-            LABELS "phase1;phase2;phase3;ui"
+            LABELS "phase1;phase2;phase3;phase4;ui"
             RESOURCE_LOCK VidScopeGuiMedia
             TIMEOUT 45
     )
@@ -305,7 +340,7 @@ add_test(NAME vidscope.ui_smoke COMMAND VidScope --smoke-test)
 set_tests_properties(
     vidscope.ui_smoke
     PROPERTIES
-        LABELS "phase1;phase3;ui"
+        LABELS "phase1;phase3;phase4;ui"
         TIMEOUT 30
 )
 vidscope_configure_offscreen_test(vidscope.ui_smoke)

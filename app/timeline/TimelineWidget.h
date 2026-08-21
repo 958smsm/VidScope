@@ -2,6 +2,8 @@
 
 #include "timeline/TimelineModel.h"
 
+#include <QtCore/QPoint>
+#include <QtCore/QPointF>
 #include <QtWidgets/QWidget>
 
 #include <cstdint>
@@ -45,6 +47,11 @@ signals:
     void viewportChanged(qint64 startNanoseconds, qint64 endNanoseconds);
     void selectionChanged(qint64 startNanoseconds, qint64 endNanoseconds, bool active);
     void hoverChanged(qint64 nanoseconds, qint64 presentationIndex, bool active);
+    void hoverPreviewChanged(
+        qint64 nanoseconds,
+        qint64 presentationIndex,
+        QPoint globalPosition,
+        bool active);
     void markerActivated(quint64 id, qint64 nanoseconds);
 
 protected:
@@ -72,7 +79,7 @@ private:
     [[nodiscard]] qint64 nearestKnownPresentationIndex(media::MediaTime time) const noexcept;
     void emitViewportChanged();
     void emitSelectionChanged();
-    void updateHover(qreal x);
+    void updateHover(QPointF position);
     void updateScrub(qreal x, bool force);
     void updateSelection(qreal x);
     void cancelInteraction();

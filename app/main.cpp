@@ -1,7 +1,9 @@
 #include "core/Logging.h"
 #include "media/FfmpegRaii.h"
 #include "playback/PlaybackController.h"
+#include "thumbnails/ThumbnailManager.h"
 #include "timeline/TimelineWidget.h"
+#include "widgets/HoverPreviewPopup.h"
 #include "widgets/MainWindow.h"
 
 #include <QtCore/QCommandLineOption>
@@ -56,7 +58,7 @@ int main(int argc, char* argv[])
     QApplication::setOrganizationDomain(QStringLiteral("vidscope.app"));
     QApplication::setApplicationName(QStringLiteral("VidScope"));
     QApplication::setApplicationDisplayName(QStringLiteral("VidScope"));
-    QApplication::setApplicationVersion(QStringLiteral("0.3.0"));
+    QApplication::setApplicationVersion(QStringLiteral("0.4.0"));
 
     vidscope::core::installLogging();
     vidscope::core::installFfmpegLogBridge();
@@ -70,7 +72,7 @@ int main(int argc, char* argv[])
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        QStringLiteral("Frame-accurate Qt and FFmpeg video inspection with a zoomable timeline."));
+        QStringLiteral("Frame-accurate Qt and FFmpeg video inspection with a zoomable timeline and asynchronous hover previews."));
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption smokeTest(
@@ -104,9 +106,14 @@ int main(int argc, char* argv[])
         QStringLiteral("playbackController"));
     auto* timeline = window.findChild<vidscope::timeline::TimelineWidget*>(
         QStringLiteral("timelineWidget"));
+    auto* thumbnailManager = window.findChild<vidscope::thumbnails::ThumbnailManager*>(
+        QStringLiteral("thumbnailManager"));
+    auto* hoverPreviewPopup = window.findChild<vidscope::widgets::HoverPreviewPopup*>(
+        QStringLiteral("hoverPreviewPopup"));
 
-    if ((runImmediateSmoke || runMediaSmoke) && timeline == nullptr) {
-        qCritical() << "Smoke test could not find the Phase 3 timeline widget";
+    if ((runImmediateSmoke || runMediaSmoke)
+        && (timeline == nullptr || thumbnailManager == nullptr || hoverPreviewPopup == nullptr)) {
+        qCritical() << "Smoke test could not find the Phase 3/4 timeline preview components";
         return EXIT_FAILURE;
     }
 

@@ -8,6 +8,7 @@
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 extern "C" {
 #include <libavutil/pixdesc.h>
@@ -74,6 +75,14 @@ QImage FrameConverter::toBgraImage(
     const DecodedFrame& frame,
     core::CancellationToken cancellation)
 {
+    return toBgraImage(frame, QSize(frame.width, frame.height), std::move(cancellation));
+}
+
+QImage FrameConverter::toBgraImage(
+    const DecodedFrame& frame,
+    QSize outputSize,
+    core::CancellationToken cancellation)
+{
     if (cancellation.isCancellationRequested()) {
         return {};
     }
@@ -85,6 +94,9 @@ QImage FrameConverter::toBgraImage(
     if (source->width <= 0 || source->height <= 0 || source->data[0] == nullptr
         || source->format < 0) {
         throw std::invalid_argument("The decoded frame has invalid image geometry or data");
+    }
+    if (!outputSize.isValid() || outputSize.width() <= 0 || outputSize.height() <= 0) {
+        throw std::invalid_argument("The requested converted image size is invalid");
     }
     const auto sourceFormat = static_cast<AVPixelFormat>(source->format);
     if (isHardwarePixelFormat(sourceFormat) || source->hw_frames_ctx != nullptr) {
@@ -98,8 +110,8 @@ QImage FrameConverter::toBgraImage(
         source->width,
         source->height,
         sourceFormat,
-        source->width,
-        source->height,
+        outputSize.width(),
+        outputSize.height(),
         kOutputPixelFormat,
         SWS_BILINEAR,
         nullptr,
@@ -128,7 +140,7 @@ QImage FrameConverter::toBgraImage(
         }
     }
 
-    QImage image(source->width, source->height, kOutputImageFormat);
+    QImage image(outputSize, kOutputImageFormat);
     if (image.isNull()) {
         throw std::runtime_error("Could not allocate the converted video image");
     }
@@ -150,7 +162,7 @@ QImage FrameConverter::toBgraImage(
         source->height,
         outputData.data(),
         outputLinesize.data());
-    if (convertedRows != source->height) {
+    if (convertedRows != outputSize.height()) {
         throw std::runtime_error("FFmpeg did not convert the complete video frame");
     }
     if (cancellation.isCancellationRequested()) {
