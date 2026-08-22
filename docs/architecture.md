@@ -1,27 +1,31 @@
-# VidScope Phase 0-4 architecture
+# VidScope Phase 0-5 architecture
 
 VidScope is a C++20, Qt 6.11.2, direct-FFmpeg video inspection application.
-Phase 4 adds asynchronous decoded hover previews without weakening the
-frame-accurate playback, timestamp, ownership, timeline, or thread boundaries
-established in Phases 2 and 3.
+Phase 5 adds configurable asynchronous preview filmstrips on top of the Phase 4
+thumbnail subsystem without weakening the frame-accurate playback, timestamp,
+ownership, timeline, cancellation, or thread boundaries established earlier.
 
 ## Dependency direction
 
 ```text
-MainWindow / TimelineWidget / VideoViewport / HoverPreviewPopup
-        |                |                    |
+MainWindow / TimelineWidget / VideoViewport / HoverPreviewPopup / FilmstripWidget
+        |                |                    |                    |
         |                |                    +-> HoverPreviewController
-        |                |                              |
-        |                +-> TimelineModel              +-> ThumbnailManager
-        |                    (GUI-owned state)                    |
-        |                                                ThumbnailScheduler
-PlaybackController (Qt adapter, GUI-thread API)                   |
-        |                                                reusable worker pool
-PlaybackSession (single playback-worker confinement)              |
-        |                                                PlaybackSession(s)
-MediaSource -> Demuxer -> VideoDecoder                             |
-        |                                                        |
-      FFmpeg <----------------------------------------------------+
+        |                |                                         |
+        |                +-> TimelineModel <- FilmstripModel        |
+        |                    (GUI-owned state)        |              |
+        |                                      FilmstripController  |
+        |                                               |            |
+        +--------------------------------------- ThumbnailManager <--+
+                                                        |
+                                                ThumbnailScheduler
+PlaybackController (Qt adapter, GUI-thread API)          |
+        |                                       reusable worker pool
+PlaybackSession (single playback-worker confinement)     |
+        |                                       PlaybackSession(s)
+MediaSource -> Demuxer -> VideoDecoder                    |
+        |                                               |
+      FFmpeg <-------------------------------------------+
 ```
 
 `TimelineWidget` never calls FFmpeg. It owns a `TimelineModel`, turns pointer
@@ -41,6 +45,13 @@ and global cursor position. The manager owns no widget; it snapshots the media
 epoch, checks memory cache on the GUI thread, and sends misses to a bounded
 priority scheduler. `HoverPreviewController` owns debounce and popup state, and
 only touches QWidget objects on the GUI thread.
+
+`FilmstripModel` reads only centralized `TimelineModel` state and produces a
+bounded target plan. `FilmstripController` maps that plan onto one tagged
+thumbnail batch, rejects superseded delivery, retries a still-current loading
+cell when the shared bounded scheduler reports preemption, and never decodes.
+`FilmstripWidget` paints every cell itself; custom counts do not create one Qt
+widget per frame.
 
 ## Ownership and lifetime
 
@@ -66,9 +77,12 @@ only touches QWidget objects on the GUI thread.
   Cached `QImage` values are implicitly shared across queued delivery. Memory-LRU
   mutation and disk serialization use separate locks, so a GUI-thread memory hit
   cannot wait behind image encoding, file I/O, or disk pruning.
+- `FilmstripController` owns no worker thread and retains only media metadata,
+  generation-to-cell mappings, and GUI timers. Its destruction cancels only the
+  filmstrip priority lanes before `ThumbnailManager` joins its workers.
 - `HoverPreviewController` explicitly deletes its top-level tooltip popup before
-  its anchor window is destroyed. `MainWindow` destroys hover coordination and
-  thumbnail workers before the playback controller.
+  its anchor window is destroyed. `MainWindow` destroys hover/filmstrip
+  coordination and thumbnail workers before the playback controller.
 
 ## Timestamp and identity invariants
 
@@ -188,20 +202,26 @@ retry the CPU decoder, so correctness does not depend on GPU availability.
 
 ## Phase boundary
 
-Phase 4 includes the custom timeline plus asynchronous decoded hover previews:
-a bounded priority scheduler, reusable decoder workers, request generations,
-active cancellation, memory/disk cache, cursor-following popup, application and
-screen geometry clamping, exact decoded-frame metadata, and double-checked
-stale-result prevention. It does not create a decoder per cursor event and does
-not share the playback decoder.
+Phase 5 includes the custom timeline, asynchronous decoded hover previews, and
+a configurable filmstrip with 8/16/20/32/custom counts and Entire Video, Around
+Current Position, Visible Timeline, and Selected Range policies. Filmstrip
+planning is independently testable, timestamp-authoritative, and bounded to 64
+cells. One controller batch generation plus per-request generations prevents a
+stale mode/count/range result from mutating the current strip.
 
-The hover popup exposes optional motion and similarity fields but displays them
-as unavailable until the real analysis pipeline exists. Phase 4 performs no
-full-video preprocessing, hidden indexing, or fake score generation. Known
-frame and keyframe coverage in the timeline still grows from exact frames
-published by playback.
+The hover popup and filmstrip share `ThumbnailManager`, but not the playback
+decoder. Hover remains higher priority; visible-strip and near-playhead lanes can
+be cancelled independently. The default pending queue is bounded at 96, leaving
+headroom above the 64-cell filmstrip cap. Tighter configurations and priority
+preemption emit cancellation completion so only still-current loading cells are
+retried. Memory/disk caches and reusable worker sessions are shared, so Phase 5
+adds no decoder-per-thumbnail path.
 
-Phase 5+ owns configurable filmstrip population, progressive analysis,
-motion/similarity/scene heatmaps and LOD, automatic scene/duplicate/freeze
-detection, selection consumers, inspection, audio rendering/A-V sync, and
-export.
+The filmstrip exposes real decoded timestamp, presentation index when
+established, PTS/DTS, picture type, and keyframe state. It leaves motion and
+similarity absent until Phase 6. A double-click integration signal is present,
+but the complete Frame Inspector remains Phase 9.
+
+Phase 6+ owns progressive analysis, motion/similarity/scene heatmaps and LOD,
+automatic scene/duplicate/freeze detection, detailed inspection, audio
+rendering/A-V sync, and export.

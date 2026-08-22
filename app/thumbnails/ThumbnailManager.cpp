@@ -209,6 +209,14 @@ public:
         job.cacheKey = std::move(cacheKey);
         job.media = std::move(*mediaSource);
         job.cancellation = std::make_shared<core::CancellationSource>();
+        job.cancellationNotifier = [
+            this,
+            generation,
+            priority,
+            mediaEpoch = job.media.epoch
+        ] {
+            postCancellation(generation, priority, mediaEpoch);
+        };
         if (!scheduler_.schedule(std::move(job))) {
             if (priority == ThumbnailPriority::HoverPreview
                 && currentHoverGeneration_.load(std::memory_order_acquire) == generation) {
@@ -221,8 +229,15 @@ public:
 
     void cancelHoverPreview() noexcept
     {
-        currentHoverGeneration_.store(0, std::memory_order_release);
-        scheduler_.cancelPriority(ThumbnailPriority::HoverPreview);
+        cancelRequests(ThumbnailPriority::HoverPreview);
+    }
+
+    void cancelRequests(const ThumbnailPriority priority) noexcept
+    {
+        if (priority == ThumbnailPriority::HoverPreview) {
+            currentHoverGeneration_.store(0, std::memory_order_release);
+        }
+        scheduler_.cancelPriority(priority);
     }
 
     void cancelAll() noexcept
@@ -261,14 +276,22 @@ public:
 
 private:
     struct WorkerCompletion final {
+        Impl* owner = nullptr;
         ThumbnailScheduler* scheduler = nullptr;
         std::size_t workerSlot = 0;
         ThumbnailGeneration generation = 0;
+        ThumbnailPriority priority = ThumbnailPriority::BackgroundPrecache;
+        std::uint64_t mediaEpoch = 0;
+        std::shared_ptr<core::CancellationSource> cancellation;
 
         ~WorkerCompletion()
         {
             if (scheduler != nullptr) {
                 scheduler->complete(workerSlot, generation);
+            }
+            if (owner != nullptr && cancellation
+                && cancellation->isCancellationRequested()) {
+                owner->postCancellation(generation, priority, mediaEpoch);
             }
         }
     };
@@ -332,7 +355,15 @@ private:
             }
 
             ThumbnailJob job = std::move(*taken.job);
-            WorkerCompletion completion{&scheduler_, workerSlot, job.request.generation};
+            WorkerCompletion completion{
+                this,
+                &scheduler_,
+                workerSlot,
+                job.request.generation,
+                job.request.priority,
+                job.media.epoch,
+                job.cancellation,
+            };
             const auto cancellation = job.cancellation->token();
             if (cancellation.isCancellationRequested()) {
                 continue;
@@ -495,6 +526,22 @@ private:
             Qt::QueuedConnection);
     }
 
+    void postCancellation(
+        const ThumbnailGeneration generation,
+        const ThumbnailPriority priority,
+        const std::uint64_t mediaEpoch)
+    {
+        QPointer<ThumbnailManager> owner(owner_);
+        QMetaObject::invokeMethod(
+            owner_,
+            [owner, generation, priority, mediaEpoch] {
+                if (owner) {
+                    owner->deliverCancellation(generation, priority, mediaEpoch);
+                }
+            },
+            Qt::QueuedConnection);
+    }
+
     ThumbnailManager* const owner_;
     const ThumbnailManagerConfig config_;
     ThumbnailCache cache_;
@@ -549,6 +596,11 @@ void ThumbnailManager::cancelHoverPreview() noexcept
     impl_->cancelHoverPreview();
 }
 
+void ThumbnailManager::cancelRequests(const ThumbnailPriority priority) noexcept
+{
+    impl_->cancelRequests(priority);
+}
+
 void ThumbnailManager::cancelAll() noexcept
 {
     impl_->cancelAll();
@@ -584,6 +636,17 @@ void ThumbnailManager::deliverFailure(
         return;
     }
     emit previewFailed(generation, detail);
+}
+
+void ThumbnailManager::deliverCancellation(
+    const ThumbnailGeneration generation,
+    const ThumbnailPriority priority,
+    const std::uint64_t mediaEpoch)
+{
+    if (!impl_->accepts(generation, priority, mediaEpoch)) {
+        return;
+    }
+    emit previewCancelled(generation);
 }
 
 } // namespace vidscope::thumbnails

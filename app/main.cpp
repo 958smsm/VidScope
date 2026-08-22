@@ -3,6 +3,8 @@
 #include "playback/PlaybackController.h"
 #include "thumbnails/ThumbnailManager.h"
 #include "timeline/TimelineWidget.h"
+#include "widgets/FilmstripController.h"
+#include "widgets/FilmstripWidget.h"
 #include "widgets/HoverPreviewPopup.h"
 #include "widgets/MainWindow.h"
 
@@ -58,7 +60,7 @@ int main(int argc, char* argv[])
     QApplication::setOrganizationDomain(QStringLiteral("vidscope.app"));
     QApplication::setApplicationName(QStringLiteral("VidScope"));
     QApplication::setApplicationDisplayName(QStringLiteral("VidScope"));
-    QApplication::setApplicationVersion(QStringLiteral("0.4.0"));
+    QApplication::setApplicationVersion(QStringLiteral("0.5.0"));
 
     vidscope::core::installLogging();
     vidscope::core::installFfmpegLogBridge();
@@ -72,7 +74,7 @@ int main(int argc, char* argv[])
 
     QCommandLineParser parser;
     parser.setApplicationDescription(
-        QStringLiteral("Frame-accurate Qt and FFmpeg video inspection with a zoomable timeline and asynchronous hover previews."));
+        QStringLiteral("Frame-accurate Qt and FFmpeg video inspection with a zoomable timeline, hover previews, and configurable filmstrips."));
     parser.addHelpOption();
     parser.addVersionOption();
     const QCommandLineOption smokeTest(
@@ -110,10 +112,15 @@ int main(int argc, char* argv[])
         QStringLiteral("thumbnailManager"));
     auto* hoverPreviewPopup = window.findChild<vidscope::widgets::HoverPreviewPopup*>(
         QStringLiteral("hoverPreviewPopup"));
+    auto* filmstripController = window.findChild<vidscope::widgets::FilmstripController*>(
+        QStringLiteral("filmstripController"));
+    auto* filmstripWidget = window.findChild<vidscope::widgets::FilmstripWidget*>(
+        QStringLiteral("filmstripWidget"));
 
     if ((runImmediateSmoke || runMediaSmoke)
-        && (timeline == nullptr || thumbnailManager == nullptr || hoverPreviewPopup == nullptr)) {
-        qCritical() << "Smoke test could not find the Phase 3/4 timeline preview components";
+        && (timeline == nullptr || thumbnailManager == nullptr || hoverPreviewPopup == nullptr
+            || filmstripController == nullptr || filmstripWidget == nullptr)) {
+        qCritical() << "Smoke test could not find the Phase 3/4/5 timeline preview components";
         return EXIT_FAILURE;
     }
 
@@ -139,17 +146,18 @@ int main(int argc, char* argv[])
             controller,
             &vidscope::playback::PlaybackController::frameReady,
             &application,
-            [&application, &mediaSmokeTimeout, &mediaSmokeFinished, timeline](
+            [&application, &mediaSmokeTimeout, &mediaSmokeFinished, timeline, filmstripWidget](
                 const vidscope::media::DecodedFramePtr& frame,
                 const QImage& image) {
                 if (mediaSmokeFinished || !frame || image.isNull()) {
                     return;
                 }
                 if (timeline == nullptr || !timeline->model().hasMedia()
-                    || timeline->model().knownFrameCount() == 0) {
+                    || timeline->model().knownFrameCount() == 0
+                    || filmstripWidget == nullptr || filmstripWidget->itemCount() == 0) {
                     mediaSmokeFinished = true;
                     mediaSmokeTimeout.stop();
-                    qCritical() << "Media smoke frame did not reach the Phase 3 timeline model";
+                    qCritical() << "Media smoke frame did not reach the Phase 3 timeline / Phase 5 filmstrip";
                     application.exit(EXIT_FAILURE);
                     return;
                 }
@@ -211,8 +219,10 @@ int main(int argc, char* argv[])
             vidscope::timeline::TimelineMarkerKind::Bookmark,
             QStringLiteral("smoke"));
         if (!marker || !timeline->model().selection()
-            || timeline->model().isShowingEntireMedia()) {
-            qCritical() << "Phase 3 timeline smoke exercise failed";
+            || timeline->model().isShowingEntireMedia()
+            || filmstripController->count() < vidscope::filmstrip::FilmstripModel::kMinimumCount
+            || filmstripController->count() > vidscope::filmstrip::FilmstripModel::kMaximumCount) {
+            qCritical() << "Phase 3/5 timeline and filmstrip smoke exercise failed";
             return EXIT_FAILURE;
         }
         QTimer::singleShot(0, &application, &QCoreApplication::quit);

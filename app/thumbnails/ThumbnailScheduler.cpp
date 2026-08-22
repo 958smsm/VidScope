@@ -66,7 +66,7 @@ public:
                 return false;
             }
 
-            pending->cancellation->requestCancellation();
+            cancelPendingJob(*pending);
             pending = pending_.erase(pending);
         }
 
@@ -89,7 +89,7 @@ public:
                     job.cancellation->requestCancellation();
                     return false;
                 }
-                worst->cancellation->requestCancellation();
+                cancelPendingJob(*worst);
                 pending_.erase(worst);
             }
         }
@@ -185,7 +185,7 @@ public:
                 ++pending;
                 continue;
             }
-            pending->cancellation->requestCancellation();
+            cancelPendingJob(*pending);
             pending = pending_.erase(pending);
         }
         for (auto& active : active_) {
@@ -233,6 +233,24 @@ private:
         std::shared_ptr<core::CancellationSource> cancellation;
     };
 
+    static void cancelPendingJob(ThumbnailJob& job) noexcept
+    {
+        if (job.cancellation) {
+            job.cancellation->requestCancellation();
+        }
+        if (!job.cancellationNotifier) {
+            return;
+        }
+
+        // Notification is deliberately best-effort and noexcept because the
+        // scheduler's cancellation and shutdown paths must never unwind.
+        try {
+            job.cancellationNotifier();
+        } catch (...) {
+        }
+        job.cancellationNotifier = {};
+    }
+
     void supersedeLocked(ThumbnailPriority priority) noexcept
     {
         if (priority == ThumbnailPriority::HoverPreview) {
@@ -241,7 +259,7 @@ private:
                     ++pending;
                     continue;
                 }
-                pending->cancellation->requestCancellation();
+                cancelPendingJob(*pending);
                 pending = pending_.erase(pending);
             }
         }
@@ -262,9 +280,7 @@ private:
     void cancelAllLocked() noexcept
     {
         for (auto& job : pending_) {
-            if (job.cancellation) {
-                job.cancellation->requestCancellation();
-            }
+            cancelPendingJob(job);
         }
         pending_.clear();
         for (auto& active : active_) {

@@ -2,6 +2,7 @@
 
 #include "thumbnails/ThumbnailScheduler.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -61,10 +62,15 @@ VIDSCOPE_TEST(ThumbnailScheduler_keeps_only_the_latest_pending_hover_request)
     ThumbnailScheduler scheduler(8, 1);
     auto first = makeJob(1, ThumbnailPriority::HoverPreview, nanoseconds(100ms));
     auto second = makeJob(2, ThumbnailPriority::HoverPreview, nanoseconds(200ms));
+    std::atomic_int cancellationNotices{0};
+    first.job.cancellationNotifier = [&cancellationNotices] {
+        cancellationNotices.fetch_add(1, std::memory_order_relaxed);
+    };
 
     VIDSCOPE_REQUIRE(scheduler.schedule(std::move(first.job)));
     VIDSCOPE_REQUIRE(scheduler.schedule(std::move(second.job)));
     VIDSCOPE_REQUIRE(first.cancellation->isCancellationRequested());
+    VIDSCOPE_REQUIRE(cancellationNotices.load(std::memory_order_relaxed) == 1);
     VIDSCOPE_REQUIRE(!second.cancellation->isCancellationRequested());
     VIDSCOPE_REQUIRE(scheduler.pendingCount() == 1);
 
@@ -101,6 +107,10 @@ VIDSCOPE_TEST(ThumbnailScheduler_does_not_replace_higher_priority_duplicate_work
     ThumbnailScheduler scheduler(8, 1);
     auto visible = makeJob(20, ThumbnailPriority::VisibleThumbnail, nanoseconds(500ms));
     auto background = makeJob(21, ThumbnailPriority::BackgroundPrecache, nanoseconds(500ms));
+    std::atomic_int cancellationNotices{0};
+    visible.job.cancellationNotifier = [&cancellationNotices] {
+        cancellationNotices.fetch_add(1, std::memory_order_relaxed);
+    };
 
     VIDSCOPE_REQUIRE(scheduler.schedule(std::move(visible.job)));
     VIDSCOPE_REQUIRE(!scheduler.schedule(std::move(background.job)));
@@ -110,11 +120,35 @@ VIDSCOPE_TEST(ThumbnailScheduler_does_not_replace_higher_priority_duplicate_work
     auto hover = makeJob(22, ThumbnailPriority::HoverPreview, nanoseconds(500ms));
     VIDSCOPE_REQUIRE(scheduler.schedule(std::move(hover.job)));
     VIDSCOPE_REQUIRE(visible.cancellation->isCancellationRequested());
+    VIDSCOPE_REQUIRE(cancellationNotices.load(std::memory_order_relaxed) == 1);
 
     auto taken = scheduler.waitTake(0, std::stop_token{}, 0);
     VIDSCOPE_REQUIRE(taken.status == ThumbnailTakeStatus::Job);
     VIDSCOPE_REQUIRE(taken.job->request.generation == 22);
     scheduler.complete(0, 22);
+}
+
+VIDSCOPE_TEST(ThumbnailScheduler_notifies_pending_queue_eviction_once)
+{
+    ThumbnailScheduler scheduler(1, 1);
+    auto first = makeJob(25, ThumbnailPriority::VisibleThumbnail, nanoseconds(100ms));
+    auto replacement = makeJob(26, ThumbnailPriority::VisibleThumbnail, nanoseconds(200ms));
+    std::atomic_int cancellationNotices{0};
+    first.job.cancellationNotifier = [&cancellationNotices] {
+        cancellationNotices.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    VIDSCOPE_REQUIRE(scheduler.schedule(std::move(first.job)));
+    VIDSCOPE_REQUIRE(scheduler.schedule(std::move(replacement.job)));
+    VIDSCOPE_REQUIRE(first.cancellation->isCancellationRequested());
+    VIDSCOPE_REQUIRE(cancellationNotices.load(std::memory_order_relaxed) == 1);
+
+    auto taken = scheduler.waitTake(0, std::stop_token{}, 0);
+    VIDSCOPE_REQUIRE(taken.status == ThumbnailTakeStatus::Job);
+    VIDSCOPE_REQUIRE(taken.job->request.generation == 26);
+    scheduler.complete(0, 26);
+    scheduler.close();
+    VIDSCOPE_REQUIRE(cancellationNotices.load(std::memory_order_relaxed) == 1);
 }
 
 VIDSCOPE_TEST(ThumbnailScheduler_maintenance_cancels_jobs_and_wakes_workers)

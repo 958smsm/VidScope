@@ -6,8 +6,8 @@ endif()
 
 project(
     VidScope
-    VERSION 0.4.0
-    DESCRIPTION "Frame-accurate professional video inspection with asynchronous hover previews"
+    VERSION 0.5.0
+    DESCRIPTION "Frame-accurate professional video inspection with asynchronous previews and filmstrips"
     LANGUAGES CXX
 )
 
@@ -38,6 +38,7 @@ target_sources(
     vidscope_engine
     PRIVATE
         app/core/Logging.cpp
+        app/filmstrip/FilmstripModel.cpp
         app/media/Demuxer.cpp
         app/media/FfmpegRaii.cpp
         app/media/FrameConverter.cpp
@@ -58,6 +59,7 @@ target_sources(
         FILES
             app/core/Cancellation.h
             app/core/Logging.h
+            app/filmstrip/FilmstripModel.h
             app/media/Demuxer.h
             app/media/FfmpegRaii.h
             app/media/FrameConverter.h
@@ -96,6 +98,8 @@ target_sources(
     PRIVATE
         app/render/VideoViewport.cpp
         app/timeline/TimelineWidget.cpp
+        app/widgets/FilmstripController.cpp
+        app/widgets/FilmstripWidget.cpp
         app/widgets/HoverPreviewController.cpp
         app/widgets/HoverPreviewPopup.cpp
         app/widgets/MainWindow.cpp
@@ -106,6 +110,8 @@ target_sources(
         FILES
             app/render/VideoViewport.h
             app/timeline/TimelineWidget.h
+            app/widgets/FilmstripController.h
+            app/widgets/FilmstripWidget.h
             app/widgets/HoverPreviewController.h
             app/widgets/HoverPreviewPopup.h
             app/widgets/MainWindow.h
@@ -148,6 +154,7 @@ if(WIN32 AND VIDSCOPE_DEPLOY_RUNTIME)
                 POST_BUILD
                 COMMAND "${VIDSCOPE_WINDEPLOYQT}"
                     --no-translations
+                    --force
                     "$<TARGET_FILE:VidScope>"
                 COMMENT "Deploying Qt runtime"
                 VERBATIM

@@ -17,7 +17,9 @@ namespace vidscope::thumbnails {
 
 struct ThumbnailManagerConfig final {
     std::size_t workerCount = 2;
-    std::size_t maximumPendingRequests = 64;
+    // A full 64-cell filmstrip plus interactive hover work must fit without
+    // unbounded growth or routine eviction. The queue remains strictly bounded.
+    std::size_t maximumPendingRequests = 96;
     std::size_t workerFrameCacheBytes = 48ULL * 1024ULL * 1024ULL;
     std::size_t workerQueueBytes = 16ULL * 1024ULL * 1024ULL;
     std::size_t workerQueueFrames = 4;
@@ -44,6 +46,7 @@ public:
         ThumbnailPriority priority = ThumbnailPriority::HoverPreview,
         qint64 presentationIndexHint = -1);
     void cancelHoverPreview() noexcept;
+    void cancelRequests(ThumbnailPriority priority) noexcept;
     void cancelAll() noexcept;
 
     [[nodiscard]] ThumbnailCacheStats cacheStats() const;
@@ -51,6 +54,7 @@ public:
 signals:
     void previewReady(const vidscope::thumbnails::ThumbnailResult& result);
     void previewFailed(vidscope::thumbnails::ThumbnailGeneration generation, const QString& detail);
+    void previewCancelled(vidscope::thumbnails::ThumbnailGeneration generation);
     void cacheStatsChanged(
         quint64 memoryHits,
         quint64 diskHits,
@@ -64,6 +68,10 @@ private:
         ThumbnailPriority priority,
         std::uint64_t mediaEpoch,
         QString detail);
+    void deliverCancellation(
+        ThumbnailGeneration generation,
+        ThumbnailPriority priority,
+        std::uint64_t mediaEpoch);
 
     class Impl;
     std::unique_ptr<Impl> impl_;

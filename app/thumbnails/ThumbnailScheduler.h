@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stop_token>
@@ -26,6 +27,11 @@ struct ThumbnailJob final {
     ThumbnailCacheKey cacheKey;
     ThumbnailMediaSource media;
     std::shared_ptr<core::CancellationSource> cancellation;
+    // Pending jobs can be removed before a worker takes ownership (for
+    // example, queue eviction or higher-priority supersession). The scheduler
+    // invokes this callback exactly once for such removals so request owners do
+    // not remain stuck waiting for a completion that can no longer arrive.
+    std::function<void()> cancellationNotifier;
     std::uint64_t sequence = 0;
 };
 

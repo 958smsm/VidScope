@@ -23,6 +23,8 @@ class ThumbnailManager;
 
 namespace vidscope::widgets {
 
+class FilmstripController;
+class FilmstripWidget;
 class HoverPreviewController;
 
 class MainWindow final : public QMainWindow {
@@ -53,13 +55,17 @@ private:
     bool opening_ = false;
     playback::PlaybackController* controller_ = nullptr;
     thumbnails::ThumbnailManager* thumbnailManager_ = nullptr;
+    FilmstripController* filmstripController_ = nullptr;
     HoverPreviewController* hoverPreviewController_ = nullptr;
     render::VideoViewport* viewport_ = nullptr;
     timeline::TimelineWidget* timeline_ = nullptr;
+    FilmstripWidget* filmstrip_ = nullptr;
     QLabel* frameStatus_ = nullptr;
     QLabel* mediaStatus_ = nullptr;
     QLabel* selectionStatus_ = nullptr;
     QComboBox* frameStepBox_ = nullptr;
+    QComboBox* filmstripModeBox_ = nullptr;
+    QComboBox* filmstripCountBox_ = nullptr;
     QToolButton* playPauseButton_ = nullptr;
 };
 

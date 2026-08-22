@@ -3,6 +3,8 @@
 #include "render/VideoViewport.h"
 #include "timeline/TimelineWidget.h"
 #include "thumbnails/ThumbnailManager.h"
+#include "widgets/FilmstripController.h"
+#include "widgets/FilmstripWidget.h"
 #include "widgets/HoverPreviewController.h"
 #include "widgets/ShortcutEditorDialog.h"
 
@@ -23,6 +25,7 @@
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QScrollArea>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QStyle>
 #include <QtWidgets/QToolButton>
@@ -36,6 +39,7 @@ extern "C" {
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <limits>
 
@@ -45,6 +49,8 @@ namespace {
 constexpr qint64 kNanosecondsPerMillisecond = 1'000'000;
 constexpr qint64 kNanosecondsPerSecond = 1'000'000'000;
 constexpr int kMaximumFrameStepCount = 1'000;
+constexpr int kMaximumFilmstripCount = static_cast<int>(
+    filmstrip::FilmstripModel::kMaximumCount);
 
 [[nodiscard]] QString pathToQString(const std::filesystem::path& path)
 {
@@ -131,12 +137,89 @@ MainWindow::MainWindow(QWidget* parent)
 
     thumbnailManager_ = new thumbnails::ThumbnailManager({}, this);
     thumbnailManager_->setObjectName(QStringLiteral("thumbnailManager"));
+    filmstripController_ = new FilmstripController(
+        timeline_,
+        thumbnailManager_,
+        filmstrip_,
+        {},
+        this);
     hoverPreviewController_ = new HoverPreviewController(
         timeline_,
         thumbnailManager_,
         this,
         {},
         this);
+
+    connect(
+        filmstripModeBox_,
+        &QComboBox::currentIndexChanged,
+        this,
+        [this](const int index) {
+            if (filmstripController_ == nullptr || index < 0) {
+                return;
+            }
+            const int value = filmstripModeBox_->itemData(index).toInt();
+            switch (static_cast<filmstrip::FilmstripMode>(value)) {
+            case filmstrip::FilmstripMode::EntireVideo:
+            case filmstrip::FilmstripMode::AroundCurrentPosition:
+            case filmstrip::FilmstripMode::VisibleTimeline:
+            case filmstrip::FilmstripMode::SelectedRange:
+                filmstripController_->setMode(static_cast<filmstrip::FilmstripMode>(value));
+                break;
+            }
+        });
+    connect(
+        filmstripCountBox_,
+        &QComboBox::currentTextChanged,
+        this,
+        [this](const QString& text) {
+            if (filmstripController_ == nullptr) {
+                return;
+            }
+            bool valid = false;
+            const int count = text.toInt(&valid);
+            if (valid && count >= 1 && count <= kMaximumFilmstripCount) {
+                filmstripController_->setCount(static_cast<std::size_t>(count));
+            }
+        });
+    connect(
+        filmstrip_,
+        &FilmstripWidget::seekRequested,
+        controller_,
+        &playback::PlaybackController::seekToNanoseconds);
+    connect(
+        filmstrip_,
+        &FilmstripWidget::frameInspectorRequested,
+        this,
+        [this](const qint64 timestamp, const qint64 presentationIndex) {
+            controller_->pause();
+            controller_->seekToNanoseconds(timestamp);
+            statusBar()->showMessage(
+                presentationIndex >= 0
+                    ? tr("Frame %1 selected for inspection (full inspector arrives in Phase 9).")
+                          .arg(presentationIndex)
+                    : tr("Frame selected for inspection (full inspector arrives in Phase 9)."),
+                4000);
+        });
+
+    QSettings initialSettings;
+    const int savedMode = initialSettings.value(
+        QStringLiteral("filmstrip/mode"),
+        static_cast<int>(filmstrip::FilmstripMode::EntireVideo)).toInt();
+    for (int index = 0; index < filmstripModeBox_->count(); ++index) {
+        if (filmstripModeBox_->itemData(index).toInt() == savedMode) {
+            filmstripModeBox_->setCurrentIndex(index);
+            break;
+        }
+    }
+    const int savedCount = std::clamp(
+        initialSettings.value(
+            QStringLiteral("filmstrip/count"),
+            static_cast<int>(filmstrip::FilmstripModel::kDefaultCount)).toInt(),
+        1,
+        kMaximumFilmstripCount);
+    filmstripCountBox_->setCurrentText(QString::number(savedCount));
+    filmstripController_->setCount(static_cast<std::size_t>(savedCount));
 
     connect(controller_, &playback::PlaybackController::mediaOpened,
             this, &MainWindow::handleMediaOpened);
@@ -148,6 +231,7 @@ MainWindow::MainWindow(QWidget* parent)
             this, &MainWindow::showPlaybackError);
     connect(controller_, &playback::PlaybackController::mediaClosed, this, [this] {
         hoverPreviewController_->clear();
+        filmstripController_->clear();
         thumbnailManager_->clearMedia();
         viewport_->clearFrame();
         timeline_->setDuration(0);
@@ -171,6 +255,7 @@ MainWindow::MainWindow(QWidget* parent)
     });
     connect(controller_, &playback::PlaybackController::positionChanged, this, [this](qint64 positionNs) {
         timeline_->setPosition(positionNs);
+        filmstripController_->setPlayhead(positionNs);
         if (auto* position = findChild<QLabel*>(QStringLiteral("positionLabel"))) {
             position->setProperty("positionNs", QVariant::fromValue(positionNs));
             const auto duration = position->property("durationNs").toLongLong();
@@ -235,10 +320,20 @@ MainWindow::~MainWindow()
 {
     QSettings settings;
     settings.setValue(QStringLiteral("mainWindow/geometry"), saveGeometry());
+    if (filmstripController_ != nullptr) {
+        settings.setValue(
+            QStringLiteral("filmstrip/mode"),
+            static_cast<int>(filmstripController_->mode()));
+        settings.setValue(
+            QStringLiteral("filmstrip/count"),
+            static_cast<qulonglong>(filmstripController_->count()));
+    }
 
     // Join all decode workers while their GUI receivers are still alive.
     delete hoverPreviewController_;
     hoverPreviewController_ = nullptr;
+    delete filmstripController_;
+    filmstripController_ = nullptr;
     delete thumbnailManager_;
     thumbnailManager_ = nullptr;
     delete controller_;
@@ -360,6 +455,14 @@ void MainWindow::createActions()
         }
     });
 
+    auto* refreshFilmstrip = createAction("actionRefreshFilmstrip", tr("&Refresh Filmstrip"));
+    refreshFilmstrip->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    connect(refreshFilmstrip, &QAction::triggered, this, [this] {
+        if (filmstripController_ != nullptr) {
+            filmstripController_->refreshNow();
+        }
+    });
+
     auto* fullscreen = createAction("actionFullscreen", tr("&Full Screen"));
     fullscreen->setCheckable(true);
     connect(fullscreen, &QAction::toggled, this, [this](bool enabled) {
@@ -400,6 +503,75 @@ void MainWindow::createLayout()
 
     timeline_ = new timeline::TimelineWidget(controls);
     controlsLayout->addWidget(timeline_);
+
+    auto* filmstripHeader = new QHBoxLayout;
+    filmstripHeader->setContentsMargins(0, 0, 0, 0);
+    filmstripHeader->setSpacing(7);
+
+    auto* filmstripTitle = new QLabel(tr("Preview Filmstrip"), controls);
+    filmstripTitle->setObjectName(QStringLiteral("filmstripTitle"));
+    filmstripHeader->addWidget(filmstripTitle);
+    filmstripHeader->addStretch(1);
+
+    auto* modeLabel = new QLabel(tr("Mode"), controls);
+    filmstripHeader->addWidget(modeLabel);
+    filmstripModeBox_ = new QComboBox(controls);
+    filmstripModeBox_->setObjectName(QStringLiteral("filmstripMode"));
+    filmstripModeBox_->addItem(
+        tr("Entire Video"),
+        static_cast<int>(filmstrip::FilmstripMode::EntireVideo));
+    filmstripModeBox_->addItem(
+        tr("Around Current Position"),
+        static_cast<int>(filmstrip::FilmstripMode::AroundCurrentPosition));
+    filmstripModeBox_->addItem(
+        tr("Visible Timeline"),
+        static_cast<int>(filmstrip::FilmstripMode::VisibleTimeline));
+    filmstripModeBox_->addItem(
+        tr("Selected Range"),
+        static_cast<int>(filmstrip::FilmstripMode::SelectedRange));
+    filmstripModeBox_->setAccessibleName(tr("Filmstrip range mode"));
+    filmstripHeader->addWidget(filmstripModeBox_);
+
+    auto* countLabel = new QLabel(tr("Frames"), controls);
+    filmstripHeader->addWidget(countLabel);
+    filmstripCountBox_ = new QComboBox(controls);
+    filmstripCountBox_->setObjectName(QStringLiteral("filmstripCount"));
+    filmstripCountBox_->setEditable(true);
+    filmstripCountBox_->setInsertPolicy(QComboBox::NoInsert);
+    filmstripCountBox_->setValidator(new QIntValidator(1, kMaximumFilmstripCount, filmstripCountBox_));
+    filmstripCountBox_->addItems({
+        QStringLiteral("8"),
+        QStringLiteral("16"),
+        QStringLiteral("20"),
+        QStringLiteral("32")});
+    filmstripCountBox_->setCurrentText(
+        QString::number(filmstrip::FilmstripModel::kDefaultCount));
+    filmstripCountBox_->setFixedWidth(68);
+    filmstripCountBox_->setAccessibleName(tr("Filmstrip frame count"));
+    filmstripCountBox_->setToolTip(
+        tr("Preview count (presets: 8, 16, 20, 32; custom maximum %1)")
+            .arg(kMaximumFilmstripCount));
+    filmstripHeader->addWidget(filmstripCountBox_);
+
+    auto* refreshFilmstripButton = new QToolButton(controls);
+    refreshFilmstripButton->setDefaultAction(actionByName(this, "actionRefreshFilmstrip"));
+    refreshFilmstripButton->setAccessibleName(tr("Refresh filmstrip"));
+    refreshFilmstripButton->setAutoRaise(true);
+    refreshFilmstripButton->setFixedSize(30, 28);
+    filmstripHeader->addWidget(refreshFilmstripButton);
+    controlsLayout->addLayout(filmstripHeader);
+
+    auto* filmstripScrollArea = new QScrollArea(controls);
+    filmstripScrollArea->setObjectName(QStringLiteral("filmstripScrollArea"));
+    filmstripScrollArea->setFrameShape(QFrame::NoFrame);
+    filmstripScrollArea->setWidgetResizable(true);
+    filmstripScrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    filmstripScrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    filmstripScrollArea->setMinimumHeight(142);
+    filmstripScrollArea->setMaximumHeight(172);
+    filmstrip_ = new FilmstripWidget(filmstripScrollArea);
+    filmstripScrollArea->setWidget(filmstrip_);
+    controlsLayout->addWidget(filmstripScrollArea);
 
     auto* transport = new QHBoxLayout;
     transport->setContentsMargins(0, 0, 0, 0);
@@ -522,6 +694,16 @@ void MainWindow::createLayout()
         QLabel#selectionStatus { color: #7db7e8; }
         QLabel#metricsLabel { color: #7f8a99; }
         QLabel#positionLabel { color: #dce7f5; }
+        QLabel#filmstripTitle { color: #dce7f5; font-weight: 600; }
+        QScrollArea#filmstripScrollArea { background: #0f1217; border: 1px solid #282f39; }
+        QComboBox {
+            background: #202630;
+            color: #d9dee7;
+            border: 1px solid #394351;
+            border-radius: 4px;
+            padding: 3px 7px;
+        }
+        QComboBox:disabled { color: #636d7a; background: #191d23; }
         QToolButton {
             background: transparent;
             border: 1px solid transparent;
@@ -572,6 +754,8 @@ void MainWindow::createMenus()
     timelineMenu->addAction(actionByName(this, "actionClearSelection"));
     timelineMenu->addSeparator();
     timelineMenu->addAction(actionByName(this, "actionAddMarker"));
+    timelineMenu->addSeparator();
+    timelineMenu->addAction(actionByName(this, "actionRefreshFilmstrip"));
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(actionByName(this, "actionFullscreen"));
@@ -656,6 +840,7 @@ void MainWindow::openFile()
     // Invalidate old playback and preview generations synchronously. Any
     // already-queued delivery is ignored until the new media lifecycle exists.
     hoverPreviewController_->clear();
+    filmstripController_->clear();
     thumbnailManager_->clearMedia();
     opening_ = true;
     timeline_->setDuration(0);
@@ -675,6 +860,7 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
     thumbnailManager_->setMedia(info);
     handleState(controller_->state());
     timeline_->setDuration(static_cast<qint64>(info->duration.count()));
+    filmstripController_->setMedia(info);
     updateSelectionStatus();
 
     const QString fileName = pathToQString(info->path.filename());
@@ -715,6 +901,9 @@ void MainWindow::handleFrame(media::DecodedFramePtr frame, const QImage& image)
         return;
     }
     timeline_->observeFrame(*frame);
+    filmstripController_->setPlayhead(
+        static_cast<qint64>(frame->presentationTime.count()));
+    filmstripController_->notifyFrameObserved();
     viewport_->setFrame(image);
     updateFrameStatus(*frame);
     updateSelectionStatus();
@@ -751,12 +940,15 @@ void MainWindow::handleState(playback::PlaybackState state)
              "actionSetIn",
              "actionSetOut",
              "actionClearSelection",
-             "actionAddMarker"}) {
+             "actionAddMarker",
+             "actionRefreshFilmstrip"}) {
         if (auto* action = actionByName(this, name)) {
             action->setEnabled(hasMedia);
         }
     }
     frameStepBox_->setEnabled(hasMedia);
+    filmstripModeBox_->setEnabled(hasMedia);
+    filmstripCountBox_->setEnabled(hasMedia);
     statusBar()->showMessage(stateDescription(state));
 }
 

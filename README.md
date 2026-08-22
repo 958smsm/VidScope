@@ -6,16 +6,17 @@ timestamps, B-frame reordering, VFR navigation, seek behavior, decoded-frame
 ownership, timeline coordinates, thumbnail generation, and cache policy under
 application control.
 
-The implemented milestone is Phase 0-4. It includes media opening, direct
+The implemented milestone is Phase 0-5. It includes media opening, direct
 demux/decode, optional hardware decoding with CPU fallback, bounded frame
 history and forward queues, cancellable keyframe-based seek, exact
 next/previous and signed N-frame navigation, keyframe navigation,
 HDR10/color/frame metadata, deterministic shutdown, a custom zoomable timeline,
-and asynchronous decoded hover previews. Hover work runs through a bounded
-priority scheduler and reusable FFmpeg worker pool separate from playback. The
-latest cursor request supersedes stale work; results use bounded memory and disk
-caches and are delivered only when their media epoch and request generation are
-still current.
+asynchronous decoded hover previews, and a configurable preview filmstrip. Hover
+and filmstrip work run through one bounded priority scheduler and reusable FFmpeg
+worker pool separate from playback. The latest interactive request supersedes
+stale work; filmstrip batches reject superseded deliveries, use bounded memory
+and disk caches, retry still-current cells after bounded-scheduler preemption,
+and never create one QWidget or decoder per frame.
 
 ## Prerequisites
 
@@ -28,14 +29,18 @@ still current.
 
 ## Build on the configured Windows workstation
 
+The enhanced wrapper is useful with no arguments: it selects the Release preset,
+auto-loads MSVC when needed, configures, builds, repairs Qt/FFmpeg deployment,
+runs the startup probe, and then runs CTest.
+
 ```powershell
-& 'E:\Program Files\Microsoft Visual Studio\18\Enterprise\Common7\Tools\Launch-VsDevShell.ps1' `
-  -Arch amd64 -SkipAutomaticLocation
-cmake --preset windows-msvc
-cmake --build --preset windows-debug
-ctest --preset windows-debug
-cmake --build --preset windows-release
-ctest --preset windows-release
+.\tools\build_windows.ps1
+```
+
+Debug remains explicit:
+
+```powershell
+.\tools\build_windows.ps1 -c Debug
 ```
 
 The checked-in Windows preset expects Qt 6.11.2 and the FFmpeg SDK under
@@ -83,10 +88,20 @@ Timeline:
 - configured Zoom In/Out shortcuts: zoom around the visible playhead, or the
   viewport center when the playhead is outside it
 
+Filmstrip:
+
+- count presets: 8, 16, 20, and 32, plus custom 1-64
+- modes: Entire Video, Around Current Position, Visible Timeline, and Selected Range
+- filmstrip work is asynchronous and does not share the playback decoder
+- bounded-scheduler preemption is reported and retried only for the current batch
+- click a thumbnail to seek to its decoded presentation timestamp
+- double-click selects the frame and invokes the Phase 9 inspector integration hook
+- the selected mode and count persist through `QSettings`
+
 Application shortcuts can be remapped through **Settings > Keyboard
 Shortcuts**.
 
-The Phase 4 popup exposes exact decoded timestamp, established frame index when
+The Phase 4 hover popup exposes exact decoded timestamp, established frame index when
 known, frame type, keyframe state, and cache source. Motion and similarity are
 shown as **not analyzed** until the Phase 6 analysis pipeline supplies real
 scores; no placeholder values are fabricated.
@@ -99,14 +114,15 @@ scores; no placeholder values are fabricated.
 - [Phase 2 final review](docs/phase-2-review.md)
 - [Phase 3 final review](docs/phase-3-review.md)
 - [Phase 4 final review](docs/phase-4-review.md)
+- [Phase 5 final review](docs/phase-5-review.md)
 
-Phase 4 is the completed hover-preview foundation. The preview manager is also
-an extension point for Phase 5 filmstrips: it already supports priority lanes,
-request generations, reusable workers, pending duplicate coalescing, bounded
-memory/disk caching, and exact target metadata. Configurable filmstrip modes,
-progressive motion/similarity analysis and heatmaps, automatic scene and
-duplicate/freeze detection, audio rendering/A-V sync, detailed inspection, and
-export remain later phases.
+Phase 5 is the completed filmstrip milestone. `FilmstripModel` computes bounded,
+testable timestamp/frame-hint plans; `FilmstripController` coordinates one
+generation-tagged batch at a time through `ThumbnailManager`; and
+`FilmstripWidget` paints all cells on one lightweight surface. Progressive
+motion/similarity analysis and heatmaps, automatic scene and duplicate/freeze
+detection, audio rendering/A-V sync, the full frame inspector, and export remain
+later phases.
 
 Known timeline frame boundaries and keyframe ticks still grow only from exact
 frames published by the playback engine; opening a video does not force a
