@@ -1,25 +1,24 @@
 @echo off
-setlocal
+setlocal EnableExtensions
+rem VidScope Windows CMD build wrapper.
+rem No arguments => Release configure + build + runtime repair + tests.
 
 set "SCRIPT_DIR=%~dp0"
-set "PYTHON_BIN="
+set "BUILD_SCRIPT=%SCRIPT_DIR%build.py"
 
-where python >nul 2>nul
-if %ERRORLEVEL% equ 0 (
-    set "PYTHON_BIN=python"
-) else (
-    where py >nul 2>nul
-    if %ERRORLEVEL% equ 0 (
-        set "PYTHON_BIN=py"
-    )
+where python.exe >nul 2>nul
+if not errorlevel 1 (
+    if "%~1"=="" echo [INFO] VidScope default: Release build + runtime repair + tests
+    python.exe "%BUILD_SCRIPT%" %*
+    exit /b %ERRORLEVEL%
 )
 
-if "%PYTHON_BIN%"=="" (
-    echo [ERROR] Python executable not found in PATH. Please install Python 3.8+.
-    exit /b 1
+where py.exe >nul 2>nul
+if not errorlevel 1 (
+    if "%~1"=="" echo [INFO] VidScope default: Release build + runtime repair + tests
+    py.exe -3 "%BUILD_SCRIPT%" %*
+    exit /b %ERRORLEVEL%
 )
 
-"%PYTHON_BIN%" "%SCRIPT_DIR%build.py" %*
-set EXIT_CODE=%ERRORLEVEL%
-
-exit /b %EXIT_CODE%
+echo [ERROR] Python 3.8+ was not found. Install Python or add python.exe/py.exe to PATH. 1>&2
+exit /b 1
