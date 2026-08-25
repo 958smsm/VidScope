@@ -6,7 +6,7 @@ timestamps, B-frame reordering, VFR navigation, seek behavior, decoded-frame
 ownership, timeline coordinates, thumbnail generation, and cache policy under
 application control.
 
-The implemented milestone is Phase 0-7. It includes media opening, direct
+The implemented milestone is Phase 0-8. It includes media opening, direct
 demux/decode, optional hardware decoding with CPU fallback, bounded frame
 history and forward queues, cancellable keyframe-based seek, exact
 next/previous and signed N-frame navigation, keyframe navigation,
@@ -18,11 +18,14 @@ stale work; filmstrip batches reject superseded deliveries, use bounded memory
 and disk caches, retry still-current cells after bounded-scheduler preemption,
 and never create one QWidget or decoder per frame. A separate progressive
 analysis worker decodes presentation-order frames into bounded 160x90 luma
-planes, computes raw motion and similarity scores, persists a versioned cache,
-and yields to playback and active scrubbing. A bounded 4x temporal LOD pyramid
-incrementally aggregates those raw scores, and the custom timeline renders
-Motion, Similarity, or configurable Combined heatmaps without painting one
-primitive per frame at overview zoom.
+planes, computes raw motion, similarity, scene-change, duplicate, and stable
+fingerprint data, persists a versioned cache, and yields to playback and active
+scrubbing. A bounded 4x temporal LOD pyramid incrementally aggregates those raw
+scores, and the custom timeline renders Motion, Similarity, Scene Change, or
+configurable Combined heatmaps without painting one primitive per frame at
+overview zoom. Phase 8 derives bounded scene, exact/near duplicate,
+repeated-section, and freeze results from the compact samples without another
+decode pass.
 
 ## Prerequisites
 
@@ -93,10 +96,18 @@ Timeline:
 - `Ctrl+Shift+X`: clear selection; `Ctrl+0`: show the entire video
 - configured Zoom In/Out shortcuts: zoom around the visible playhead, or the
   viewport center when the playhead is outside it
-- **Analysis > Motion / Similarity / Combined**: switch the timeline heatmap;
+- **Analysis > Motion / Similarity / Scene Change / Combined**: switch the
+  timeline heatmap;
   the selected mode persists across sessions
 - the heatmap selects a temporal LOD level from the current pixel density,
   preserves unknown analysis gaps, and refines progressively as batches arrive
+- the dockable **Analysis Results** panel lists detected scenes, duplicate and
+  repeated ranges, and freezes; clicking any result seeks to its timestamp
+- scene list entries receive background-priority thumbnails through the shared
+  bounded thumbnail service
+- scene, near-duplicate, freeze-similarity, and minimum-freeze controls can be
+  changed and applied with **Reanalyze Detections** without decoding the video
+  again
 
 Filmstrip:
 
@@ -128,13 +139,18 @@ analysis batches arrive; no placeholder values are fabricated.
 - [Phase 5 final review](docs/phase-5-review.md)
 - [Phase 6 final review](docs/phase-6-review.md)
 - [Phase 7 final review](docs/phase-7-review.md)
+- [Phase 8 final review](docs/phase-8-review.md)
 
-Phase 7 is the completed heatmap milestone. `AnalysisManager` still owns the
-cancellable low-priority decoder worker and authoritative raw sample store, while
-`AnalysisPyramid` maintains bounded temporal aggregates and
-`TimelineHeatmapRenderer` paints only the LOD buckets needed for the current
-viewport. Automatic scene and duplicate/freeze detection, audio rendering/A-V
-sync, the full frame inspector, and export remain later phases.
+Phase 8 is the completed detection milestone. `AnalysisManager` owns the
+cancellable low-priority decoder worker and authoritative raw sample store,
+`DetectionEngine` derives bounded result snapshots, and
+`AnalysisResultsPanel` exposes threshold-only reanalysis and seekable results.
+Detected scenes automatically become timeline markers used by
+`Alt+Left` / `Alt+Right` navigation. Audio rendering/A-V sync, the full
+frame inspector, and export remain later phases.
+
+The application version is set from the CMake project version and is visible in
+`Help > About VidScope`. Phase 8 reports version `0.8.0`.
 
 Known timeline frame boundaries and keyframe ticks still grow only from exact
 frames published by the playback engine; opening a video does not force a

@@ -7,6 +7,7 @@
 
 class QLabel;
 class QComboBox;
+class QDockWidget;
 class QToolButton;
 
 namespace vidscope::analysis {
@@ -30,6 +31,7 @@ namespace vidscope::widgets {
 class FilmstripController;
 class FilmstripWidget;
 class HoverPreviewController;
+class AnalysisResultsPanel;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -52,6 +54,7 @@ private:
     void createShortcuts();
     void updateFrameStatus(const media::DecodedFrame& frame);
     void updateSelectionStatus();
+    void applyDetectionResults();
     void seekAdjacentScene(bool forward);
     void showShortcutEditor();
     [[nodiscard]] int frameStepCount() const;
@@ -65,6 +68,8 @@ private:
     render::VideoViewport* viewport_ = nullptr;
     timeline::TimelineWidget* timeline_ = nullptr;
     FilmstripWidget* filmstrip_ = nullptr;
+    AnalysisResultsPanel* analysisResults_ = nullptr;
+    QDockWidget* analysisResultsDock_ = nullptr;
     QLabel* frameStatus_ = nullptr;
     QLabel* mediaStatus_ = nullptr;
     QLabel* selectionStatus_ = nullptr;

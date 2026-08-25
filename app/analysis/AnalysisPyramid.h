@@ -16,12 +16,16 @@ struct AnalysisBucket final {
     std::uint64_t sampleCount = 0;
     std::uint64_t motionCount = 0;
     std::uint64_t similarityCount = 0;
+    std::uint64_t sceneCount = 0;
     float minMotion = 0.0F;
     float maxMotion = 0.0F;
     float averageMotion = 0.0F;
     float minSimilarity = 0.0F;
     float maxSimilarity = 0.0F;
     float averageSimilarity = 0.0F;
+    float minSceneScore = 0.0F;
+    float maxSceneScore = 0.0F;
+    float averageSceneScore = 0.0F;
 
     friend bool operator==(const AnalysisBucket&, const AnalysisBucket&) = default;
 };
@@ -76,12 +80,16 @@ private:
         std::uint64_t sampleCount = 0;
         std::uint64_t motionCount = 0;
         std::uint64_t similarityCount = 0;
+        std::uint64_t sceneCount = 0;
         double motionSum = 0.0;
         double similaritySum = 0.0;
+        double sceneSum = 0.0;
         float minMotion = 1.0F;
         float maxMotion = 0.0F;
         float minSimilarity = 1.0F;
         float maxSimilarity = 0.0F;
+        float minSceneScore = 1.0F;
+        float maxSceneScore = 0.0F;
     };
 
     [[nodiscard]] std::int64_t levelSpan(std::size_t level) const noexcept;

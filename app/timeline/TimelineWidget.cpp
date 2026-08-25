@@ -133,6 +133,8 @@ constexpr std::size_t kMaximumFramePrimitives = 4'096;
         return TimelineWidget::tr("Motion");
     case HeatmapMode::Similarity:
         return TimelineWidget::tr("Similarity");
+    case HeatmapMode::SceneChange:
+        return TimelineWidget::tr("Scene Change");
     case HeatmapMode::Combined:
         return TimelineWidget::tr("Combined");
     }
@@ -225,6 +227,7 @@ void TimelineWidget::setHeatmapMode(const HeatmapMode mode)
     switch (mode) {
     case HeatmapMode::Motion:
     case HeatmapMode::Similarity:
+    case HeatmapMode::SceneChange:
     case HeatmapMode::Combined:
         break;
     }
@@ -240,6 +243,7 @@ void TimelineWidget::setCombinedHeatmapWeights(CombinedHeatmapWeights weights)
 {
     weights.motion = std::max(0.0F, weights.motion);
     weights.similarityDifference = std::max(0.0F, weights.similarityDifference);
+    weights.sceneChange = std::max(0.0F, weights.sceneChange);
     if (combinedHeatmapWeights_ == weights) {
         return;
     }

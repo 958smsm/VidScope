@@ -130,6 +130,7 @@ VIDSCOPE_TEST(Phase7_progressive_analysis_publishes_bounded_lod_views)
         VIDSCOPE_REQUIRE(bucket.start <= bucket.end);
         VIDSCOPE_REQUIRE(bucket.motionCount <= bucket.sampleCount);
         VIDSCOPE_REQUIRE(bucket.similarityCount <= bucket.sampleCount);
+        VIDSCOPE_REQUIRE(bucket.sceneCount <= bucket.sampleCount);
     }
     VIDSCOPE_REQUIRE(aggregatedSamples == static_cast<std::uint64_t>(manager.sampleCount()));
 
@@ -154,22 +155,30 @@ VIDSCOPE_TEST(Phase7_renderer_supports_motion_similarity_and_configurable_combin
     bucket.sampleCount = 4;
     bucket.motionCount = 4;
     bucket.similarityCount = 4;
+    bucket.sceneCount = 4;
     bucket.averageMotion = 0.8F;
     bucket.maxMotion = 0.9F;
     bucket.averageSimilarity = 0.25F;
     bucket.minSimilarity = 0.1F;
     bucket.maxSimilarity = 0.4F;
+    bucket.averageSceneScore = 0.65F;
+    bucket.minSceneScore = 0.5F;
+    bucket.maxSceneScore = 0.9F;
 
     const auto motion = TimelineHeatmapRenderer::averageScore(bucket, HeatmapMode::Motion);
     const auto similarity = TimelineHeatmapRenderer::averageScore(bucket, HeatmapMode::Similarity);
+    const auto scene = TimelineHeatmapRenderer::averageScore(bucket, HeatmapMode::SceneChange);
     VIDSCOPE_REQUIRE(motion.has_value());
     VIDSCOPE_REQUIRE(similarity.has_value());
+    VIDSCOPE_REQUIRE(scene.has_value());
     VIDSCOPE_REQUIRE(std::abs(*motion - 0.8F) < 0.0001F);
     VIDSCOPE_REQUIRE(std::abs(*similarity - 0.25F) < 0.0001F);
+    VIDSCOPE_REQUIRE(std::abs(*scene - 0.65F) < 0.0001F);
 
     CombinedHeatmapWeights motionOnly;
     motionOnly.motion = 1.0F;
     motionOnly.similarityDifference = 0.0F;
+    motionOnly.sceneChange = 0.0F;
     const auto combined = TimelineHeatmapRenderer::averageScore(
         bucket,
         HeatmapMode::Combined,
@@ -186,6 +195,7 @@ VIDSCOPE_TEST(Phase7_renderer_supports_motion_similarity_and_configurable_combin
     for (const auto mode : {
              HeatmapMode::Motion,
              HeatmapMode::Similarity,
+             HeatmapMode::SceneChange,
              HeatmapMode::Combined}) {
         QImage image(120, 40, QImage::Format_ARGB32_Premultiplied);
         image.fill(Qt::transparent);
@@ -204,10 +214,12 @@ VIDSCOPE_TEST(Phase7_main_window_exposes_exclusive_heatmap_mode_actions)
     auto* timeline = window.findChild<TimelineWidget*>(QStringLiteral("timelineWidget"));
     auto* motion = window.findChild<QAction*>(QStringLiteral("actionHeatmapMotion"));
     auto* similarity = window.findChild<QAction*>(QStringLiteral("actionHeatmapSimilarity"));
+    auto* scene = window.findChild<QAction*>(QStringLiteral("actionHeatmapSceneChange"));
     auto* combined = window.findChild<QAction*>(QStringLiteral("actionHeatmapCombined"));
     VIDSCOPE_REQUIRE(timeline != nullptr);
     VIDSCOPE_REQUIRE(motion != nullptr);
     VIDSCOPE_REQUIRE(similarity != nullptr);
+    VIDSCOPE_REQUIRE(scene != nullptr);
     VIDSCOPE_REQUIRE(combined != nullptr);
     VIDSCOPE_REQUIRE(combined->isChecked());
     VIDSCOPE_REQUIRE(timeline->heatmapMode() == HeatmapMode::Combined);
@@ -221,6 +233,11 @@ VIDSCOPE_TEST(Phase7_main_window_exposes_exclusive_heatmap_mode_actions)
     VIDSCOPE_REQUIRE(similarity->isChecked());
     VIDSCOPE_REQUIRE(!motion->isChecked());
     VIDSCOPE_REQUIRE(timeline->heatmapMode() == HeatmapMode::Similarity);
+
+    scene->trigger();
+    VIDSCOPE_REQUIRE(scene->isChecked());
+    VIDSCOPE_REQUIRE(!similarity->isChecked());
+    VIDSCOPE_REQUIRE(timeline->heatmapMode() == HeatmapMode::SceneChange);
 }
 
 int main(int argc, char** argv)

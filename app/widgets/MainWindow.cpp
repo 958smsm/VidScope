@@ -7,6 +7,7 @@
 #include "widgets/FilmstripController.h"
 #include "widgets/FilmstripWidget.h"
 #include "widgets/HoverPreviewController.h"
+#include "widgets/AnalysisResultsPanel.h"
 #include "widgets/ShortcutEditorDialog.h"
 
 #include <QtCore/QDir>
@@ -20,6 +21,7 @@
 #include <QtGui/QKeySequence>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDockWidget>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
@@ -141,6 +143,8 @@ MainWindow::MainWindow(QWidget* parent)
     timeline_->setAnalysisManager(analysisManager_);
     thumbnailManager_ = new thumbnails::ThumbnailManager({}, this);
     thumbnailManager_->setObjectName(QStringLiteral("thumbnailManager"));
+    analysisResults_->setThumbnailManager(thumbnailManager_);
+    analysisResults_->setDetectionConfig(analysisManager_->detectionConfig());
     filmstripController_ = new FilmstripController(
         timeline_,
         thumbnailManager_,
@@ -221,6 +225,10 @@ MainWindow::MainWindow(QWidget* parent)
     case timeline::HeatmapMode::Similarity:
         savedHeatmapMode = timeline::HeatmapMode::Similarity;
         actionByName(this, "actionHeatmapSimilarity")->setChecked(true);
+        break;
+    case timeline::HeatmapMode::SceneChange:
+        savedHeatmapMode = timeline::HeatmapMode::SceneChange;
+        actionByName(this, "actionHeatmapSceneChange")->setChecked(true);
         break;
     case timeline::HeatmapMode::Combined:
         actionByName(this, "actionHeatmapCombined")->setChecked(true);
@@ -339,6 +347,29 @@ MainWindow::MainWindow(QWidget* parent)
                     tr("Marker at %1").arg(formatTime(time)),
                     1500);
             });
+    connect(
+        analysisManager_,
+        &analysis::AnalysisManager::detectionsChanged,
+        this,
+        [this](quint64 scenes, quint64 duplicates, quint64 freezes, quint64 samples) {
+            applyDetectionResults();
+            analysisStatus_->setToolTip(
+                tr("%1 analyzed samples | %2 scenes | %3 duplicate ranges | %4 freezes")
+                    .arg(samples)
+                    .arg(scenes)
+                    .arg(duplicates)
+                    .arg(freezes));
+        });
+    connect(
+        analysisResults_,
+        &AnalysisResultsPanel::seekRequested,
+        controller_,
+        &playback::PlaybackController::seekToNanoseconds);
+    connect(
+        analysisResults_,
+        &AnalysisResultsPanel::reanalyzeRequested,
+        analysisManager_,
+        &analysis::AnalysisManager::setDetectionConfig);
     connect(
         analysisManager_,
         &analysis::AnalysisManager::progressChanged,
@@ -569,6 +600,10 @@ void MainWindow::createActions()
         "actionHeatmapSimilarity",
         tr("&Similarity"),
         timeline::HeatmapMode::Similarity);
+    (void)createHeatmapMode(
+        "actionHeatmapSceneChange",
+        tr("Scene &Change"),
+        timeline::HeatmapMode::SceneChange);
     auto* combinedHeatmap = createHeatmapMode(
         "actionHeatmapCombined",
         tr("&Combined"),
@@ -785,6 +820,14 @@ void MainWindow::createLayout()
     root->addWidget(controls);
     setCentralWidget(central);
 
+    analysisResultsDock_ = new QDockWidget(tr("Analysis Results"), this);
+    analysisResultsDock_->setObjectName(QStringLiteral("analysisResultsDock"));
+    analysisResultsDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    analysisResultsDock_->setMinimumWidth(340);
+    analysisResults_ = new AnalysisResultsPanel(analysisResultsDock_);
+    analysisResultsDock_->setWidget(analysisResults_);
+    addDockWidget(Qt::RightDockWidgetArea, analysisResultsDock_);
+
     statusBar()->setSizeGripEnabled(true);
     statusBar()->showMessage(tr("Ready"));
 
@@ -883,10 +926,12 @@ void MainWindow::createMenus()
     auto* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
     analysisMenu->addAction(actionByName(this, "actionHeatmapMotion"));
     analysisMenu->addAction(actionByName(this, "actionHeatmapSimilarity"));
+    analysisMenu->addAction(actionByName(this, "actionHeatmapSceneChange"));
     analysisMenu->addAction(actionByName(this, "actionHeatmapCombined"));
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(actionByName(this, "actionFullscreen"));
+    viewMenu->addAction(analysisResultsDock_->toggleViewAction());
 
     auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
     settingsMenu->addAction(actionByName(this, "actionKeyboardShortcuts"));
@@ -1080,6 +1125,7 @@ void MainWindow::handleState(playback::PlaybackState state)
     frameStepBox_->setEnabled(hasMedia);
     filmstripModeBox_->setEnabled(hasMedia);
     filmstripCountBox_->setEnabled(hasMedia);
+    analysisResults_->setEnabled(hasMedia);
     statusBar()->showMessage(stateDescription(state));
 }
 
@@ -1189,6 +1235,30 @@ void MainWindow::updateSelectionStatus()
             .arg(formatTime(static_cast<qint64>(details.range.start.count())))
             .arg(formatTime(static_cast<qint64>(details.range.end.count())))
             .arg(count));
+}
+
+void MainWindow::applyDetectionResults()
+{
+    if (analysisManager_ == nullptr || analysisResults_ == nullptr || timeline_ == nullptr) {
+        return;
+    }
+    const auto results = analysisManager_->detectionResults();
+    if (results.analyzedSamples == 0 && results.scenes.empty()
+        && results.duplicates.empty() && results.freezes.empty()) {
+        analysisResults_->clearResults();
+    } else {
+        analysisResults_->setResults(results);
+    }
+    timeline_->clearMarkers(timeline::TimelineMarkerKind::Scene);
+    std::size_t index = 1;
+    for (const auto& scene : results.scenes) {
+        if (!timeline_->addMarker(
+                static_cast<qint64>(scene.start.count()),
+                timeline::TimelineMarkerKind::Scene,
+                tr("Scene %1").arg(index++))) {
+            break;
+        }
+    }
 }
 
 void MainWindow::seekAdjacentScene(const bool forward)

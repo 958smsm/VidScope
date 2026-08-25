@@ -1,8 +1,10 @@
 #include "analysis/VideoAnalyzer.h"
 
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 
 extern "C" {
@@ -139,34 +141,24 @@ QSize LumaExtractor::outputSize() const noexcept
 
 float VideoAnalyzer::motionScore(const LumaPlane& previous, const LumaPlane& current)
 {
-    validateComparable(previous, current);
-    std::uint64_t absoluteDifference = 0;
-    for (std::size_t index = 0; index < current.pixels.size(); ++index) {
-        const int difference = static_cast<int>(current.pixels[index])
-            - static_cast<int>(previous.pixels[index]);
-        absoluteDifference += static_cast<std::uint64_t>(std::abs(difference));
-    }
-    const double denominator = 255.0 * static_cast<double>(current.pixels.size());
-    return static_cast<float>(std::clamp(
-        static_cast<double>(absoluteDifference) / denominator,
-        0.0,
-        1.0));
+    return compare(previous, current).motion;
 }
 
-float VideoAnalyzer::similarityScore(const LumaPlane& previous, const LumaPlane& current)
+FrameAnalysisMetrics VideoAnalyzer::compare(
+    const LumaPlane& previous,
+    const LumaPlane& current)
 {
     validateComparable(previous, current);
     std::array<std::uint64_t, kHistogramBins> previousHistogram{};
     std::array<std::uint64_t, kHistogramBins> currentHistogram{};
     std::uint64_t absoluteDifference = 0;
-
     for (std::size_t index = 0; index < current.pixels.size(); ++index) {
         const auto before = previous.pixels[index];
         const auto after = current.pixels[index];
         previousHistogram[static_cast<std::size_t>(before) * kHistogramBins / 256U]++;
         currentHistogram[static_cast<std::size_t>(after) * kHistogramBins / 256U]++;
-        absoluteDifference += static_cast<std::uint64_t>(
-            std::abs(static_cast<int>(after) - static_cast<int>(before)));
+        const int difference = static_cast<int>(after) - static_cast<int>(before);
+        absoluteDifference += static_cast<std::uint64_t>(std::abs(difference));
     }
 
     std::uint64_t histogramIntersection = 0;
@@ -174,14 +166,114 @@ float VideoAnalyzer::similarityScore(const LumaPlane& previous, const LumaPlane&
         histogramIntersection += std::min(previousHistogram[index], currentHistogram[index]);
     }
     const double count = static_cast<double>(current.pixels.size());
-    const double pixelSimilarity = 1.0
-        - static_cast<double>(absoluteDifference) / (255.0 * count);
-    const double histogramSimilarity = static_cast<double>(histogramIntersection) / count;
-    return static_cast<float>(std::clamp(
+    const double motion = std::clamp(
+        static_cast<double>(absoluteDifference) / (255.0 * count),
+        0.0,
+        1.0);
+    const double pixelSimilarity = 1.0 - motion;
+    const double histogramSimilarity = std::clamp(
+        static_cast<double>(histogramIntersection) / count,
+        0.0,
+        1.0);
+    const auto previousHash = perceptualHash(previous);
+    const auto currentHash = perceptualHash(current);
+    const double perceptualSimilarity = 1.0
+        - static_cast<double>(std::popcount(previousHash ^ currentHash)) / 64.0;
+
+    FrameAnalysisMetrics result;
+    result.motion = static_cast<float>(motion);
+    result.similarity = static_cast<float>(std::clamp(
         pixelSimilarity * 0.8 + histogramSimilarity * 0.2,
         0.0,
         1.0));
+    result.sceneChange = static_cast<float>(std::clamp(
+        motion * 0.65 + (1.0 - histogramSimilarity) * 0.35,
+        0.0,
+        1.0));
+    result.duplicate = static_cast<float>(std::clamp(
+        pixelSimilarity * 0.6
+            + histogramSimilarity * 0.2
+            + std::min(pixelSimilarity, perceptualSimilarity) * 0.2,
+        0.0,
+        1.0));
+    return result;
+}
+
+float VideoAnalyzer::similarityScore(const LumaPlane& previous, const LumaPlane& current)
+{
+    return compare(previous, current).similarity;
+}
+
+std::uint64_t VideoAnalyzer::contentHash(const LumaPlane& plane)
+{
+    if (!plane.isValid()) {
+        throw std::invalid_argument("Cannot hash an invalid analysis luma plane");
+    }
+    constexpr std::uint64_t offset = 14'695'981'039'346'656'037ULL;
+    constexpr std::uint64_t prime = 1'099'511'628'211ULL;
+    std::uint64_t hash = offset;
+    const auto mix = [&](const std::uint8_t value) {
+        hash ^= value;
+        hash *= prime;
+    };
+    for (const auto pixel : plane.pixels) {
+        mix(pixel);
+    }
+    for (int shift = 0; shift < 32; shift += 8) {
+        mix(static_cast<std::uint8_t>(
+            static_cast<std::uint32_t>(plane.width) >> static_cast<unsigned>(shift)));
+        mix(static_cast<std::uint8_t>(
+            static_cast<std::uint32_t>(plane.height) >> static_cast<unsigned>(shift)));
+    }
+    return hash;
+}
+
+std::uint64_t VideoAnalyzer::perceptualHash(const LumaPlane& plane)
+{
+    if (!plane.isValid()) {
+        throw std::invalid_argument("Cannot hash an invalid analysis luma plane");
+    }
+    std::array<std::uint32_t, 64> blocks{};
+    for (int blockY = 0; blockY < 8; ++blockY) {
+        const int yStart = blockY * plane.height / 8;
+        const int yEnd = std::max(yStart + 1, (blockY + 1) * plane.height / 8);
+        for (int blockX = 0; blockX < 8; ++blockX) {
+            const int xStart = blockX * plane.width / 8;
+            const int xEnd = std::max(xStart + 1, (blockX + 1) * plane.width / 8);
+            std::uint64_t total = 0;
+            std::uint64_t count = 0;
+            for (int y = yStart; y < std::min(yEnd, plane.height); ++y) {
+                for (int x = xStart; x < std::min(xEnd, plane.width); ++x) {
+                    total += plane.pixels[
+                        static_cast<std::size_t>(y) * static_cast<std::size_t>(plane.width)
+                        + static_cast<std::size_t>(x)];
+                    ++count;
+                }
+            }
+            blocks[static_cast<std::size_t>(blockY * 8 + blockX)] =
+                static_cast<std::uint32_t>(total / std::max<std::uint64_t>(1, count));
+        }
+    }
+
+    std::uint64_t hash = 0;
+    std::size_t bit = 0;
+    for (int y = 0; y < 8; ++y) {
+        for (int x = 0; x < 7; ++x) {
+            const auto left = blocks[static_cast<std::size_t>(y * 8 + x)];
+            const auto right = blocks[static_cast<std::size_t>(y * 8 + x + 1)];
+            if (left >= right) {
+                hash |= std::uint64_t{1} << static_cast<unsigned>(bit);
+            }
+            ++bit;
+        }
+    }
+    const std::uint64_t total = std::accumulate(
+        blocks.cbegin(),
+        blocks.cend(),
+        std::uint64_t{0});
+    const auto mean = static_cast<std::uint8_t>(total / blocks.size());
+    hash |= static_cast<std::uint64_t>(mean) << 56U;
+    return hash;
 }
 
 } // namespace vidscope::analysis
-

@@ -13,12 +13,14 @@ namespace {
 [[nodiscard]] std::optional<float> combinedScore(
     const std::optional<float> motion,
     const std::optional<float> similarityDifference,
+    const std::optional<float> sceneChange,
     const CombinedHeatmapWeights weights) noexcept
 {
     float weightedScore = 0.0F;
     float activeWeight = 0.0F;
     const float motionWeight = std::max(0.0F, weights.motion);
     const float similarityWeight = std::max(0.0F, weights.similarityDifference);
+    const float sceneWeight = std::max(0.0F, weights.sceneChange);
     if (motion && motionWeight > 0.0F) {
         weightedScore += motionWeight * std::clamp(*motion, 0.0F, 1.0F);
         activeWeight += motionWeight;
@@ -26,6 +28,10 @@ namespace {
     if (similarityDifference && similarityWeight > 0.0F) {
         weightedScore += similarityWeight * std::clamp(*similarityDifference, 0.0F, 1.0F);
         activeWeight += similarityWeight;
+    }
+    if (sceneChange && sceneWeight > 0.0F) {
+        weightedScore += sceneWeight * std::clamp(*sceneChange, 0.0F, 1.0F);
+        activeWeight += sceneWeight;
     }
     if (activeWeight <= 0.0F) {
         return std::nullopt;
@@ -40,6 +46,8 @@ namespace {
         return QColor(35, 63, 86);
     case HeatmapMode::Similarity:
         return QColor(45, 55, 82);
+    case HeatmapMode::SceneChange:
+        return QColor(67, 45, 76);
     case HeatmapMode::Combined:
         return QColor(50, 49, 77);
     }
@@ -53,6 +61,8 @@ namespace {
         return QColor(255, 133, 69);
     case HeatmapMode::Similarity:
         return QColor(83, 220, 170);
+    case HeatmapMode::SceneChange:
+        return QColor(255, 92, 180);
     case HeatmapMode::Combined:
         return QColor(224, 105, 255);
     }
@@ -87,6 +97,10 @@ std::optional<float> TimelineHeatmapRenderer::averageScore(
         return bucket.similarityCount > 0
             ? std::optional<float>(bucket.averageSimilarity)
             : std::nullopt;
+    case HeatmapMode::SceneChange:
+        return bucket.sceneCount > 0
+            ? std::optional<float>(bucket.averageSceneScore)
+            : std::nullopt;
     case HeatmapMode::Combined:
         return combinedScore(
             bucket.motionCount > 0
@@ -94,6 +108,9 @@ std::optional<float> TimelineHeatmapRenderer::averageScore(
                 : std::nullopt,
             bucket.similarityCount > 0
                 ? std::optional<float>(1.0F - bucket.averageSimilarity)
+                : std::nullopt,
+            bucket.sceneCount > 0
+                ? std::optional<float>(bucket.averageSceneScore)
                 : std::nullopt,
             weights);
     }
@@ -114,6 +131,10 @@ std::optional<float> TimelineHeatmapRenderer::peakScore(
         return bucket.similarityCount > 0
             ? std::optional<float>(bucket.maxSimilarity)
             : std::nullopt;
+    case HeatmapMode::SceneChange:
+        return bucket.sceneCount > 0
+            ? std::optional<float>(bucket.maxSceneScore)
+            : std::nullopt;
     case HeatmapMode::Combined:
         return combinedScore(
             bucket.motionCount > 0
@@ -121,6 +142,9 @@ std::optional<float> TimelineHeatmapRenderer::peakScore(
                 : std::nullopt,
             bucket.similarityCount > 0
                 ? std::optional<float>(1.0F - bucket.minSimilarity)
+                : std::nullopt,
+            bucket.sceneCount > 0
+                ? std::optional<float>(bucket.maxSceneScore)
                 : std::nullopt,
             weights);
     }

@@ -3,6 +3,7 @@
 #include "analysis/AnalysisCache.h"
 #include "analysis/AnalysisPyramid.h"
 #include "analysis/AnalysisTypes.h"
+#include "analysis/DetectionEngine.h"
 #include "media/MediaTypes.h"
 #include "playback/PlaybackSession.h"
 
@@ -23,6 +24,7 @@ struct AnalysisManagerConfig final {
     media::MediaTime rangePreroll = std::chrono::seconds(1);
     std::size_t deliveryBatchFrames = 32;
     AnalysisPyramidConfig pyramid;
+    DetectionConfig detection;
     playback::PlaybackSessionConfig session;
     AnalysisCacheConfig cache;
 };
@@ -45,6 +47,8 @@ public:
     void setInteractiveActivity(bool active);
     void requestPlayhead(qint64 timestampNanoseconds);
     void requestVisibleRange(qint64 startNanoseconds, qint64 endNanoseconds);
+    void setDetectionConfig(DetectionConfig config);
+    void reanalyzeDetections();
 
     [[nodiscard]] std::optional<AnalysisSample> sampleFor(
         qint64 timestampNanoseconds,
@@ -57,6 +61,8 @@ public:
         qint64 startNanoseconds,
         qint64 endNanoseconds,
         std::size_t maximumBuckets) const;
+    [[nodiscard]] DetectionConfig detectionConfig() const;
+    [[nodiscard]] DetectionResults detectionResults() const;
     [[nodiscard]] qsizetype sampleCount() const noexcept;
     [[nodiscard]] double progress() const noexcept;
     [[nodiscard]] AnalysisState state() const noexcept;
@@ -65,12 +71,23 @@ signals:
     void samplesAvailable(qint64 startNanoseconds, qint64 endNanoseconds, quint64 totalSamples);
     void progressChanged(double progress, quint64 analyzedSamples);
     void stateChanged(vidscope::analysis::AnalysisState state);
+    void detectionsChanged(
+        quint64 sceneCount,
+        quint64 duplicateCount,
+        quint64 freezeCount,
+        quint64 analyzedSamples);
     void errorOccurred(const QString& detail);
 
 private:
     void deliverSamples(qint64 start, qint64 end, quint64 count, quint64 epoch);
     void deliverProgress(double progress, quint64 count, quint64 epoch);
     void deliverState(AnalysisState state, quint64 epoch);
+    void deliverDetections(
+        quint64 sceneCount,
+        quint64 duplicateCount,
+        quint64 freezeCount,
+        quint64 analyzedSamples,
+        quint64 epoch);
     void deliverError(QString detail, quint64 epoch);
 
     class Impl;

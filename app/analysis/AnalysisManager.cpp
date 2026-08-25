@@ -16,6 +16,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <shared_mutex>
 #include <stop_token>
 #include <thread>
 #include <utility>
@@ -25,6 +26,7 @@ namespace {
 
 enum class TaskKind : std::uint8_t {
     Initialize,
+    Detect,
     Range,
 };
 
@@ -40,7 +42,18 @@ struct AnalysisTask final {
 [[nodiscard]] bool taskPrecedes(const AnalysisTask& left, const AnalysisTask& right) noexcept
 {
     if (left.kind != right.kind) {
-        return left.kind == TaskKind::Initialize;
+        const auto rank = [](const TaskKind kind) {
+            switch (kind) {
+            case TaskKind::Initialize:
+                return 0;
+            case TaskKind::Detect:
+                return 1;
+            case TaskKind::Range:
+                return 2;
+            }
+            return 3;
+        };
+        return rank(left.kind) < rank(right.kind);
     }
     if (left.priority != right.priority) {
         return left.priority < right.priority;
@@ -170,6 +183,10 @@ public:
         }
         store_.clear();
         pyramid_.reset(duration, estimatedSamples);
+        {
+            std::unique_lock lock(detectionMutex_);
+            detections_ = {};
+        }
         condition_.notify_all();
         postState(AnalysisState::LoadingCache, epoch);
         postProgress(0.0, 0, epoch);
@@ -188,6 +205,10 @@ public:
         }
         store_.clear();
         pyramid_.clear();
+        {
+            std::unique_lock lock(detectionMutex_);
+            detections_ = {};
+        }
         condition_.notify_all();
     }
 
@@ -253,6 +274,20 @@ public:
             AnalysisPriority::VisibleRange);
     }
 
+    void setDetectionConfig(DetectionConfig config)
+    {
+        {
+            std::lock_guard lock(mutex_);
+            config_.detection = DetectionEngine::normalized(std::move(config));
+        }
+        queueDetection();
+    }
+
+    void reanalyzeDetections()
+    {
+        queueDetection();
+    }
+
     [[nodiscard]] std::optional<AnalysisSample> sampleFor(
         const qint64 timestamp,
         const qint64 presentationIndex) const
@@ -273,6 +308,16 @@ public:
             media::MediaTime(std::max<qint64>(0, end)),
             maximumBuckets);
     }
+    [[nodiscard]] DetectionConfig detectionConfig() const
+    {
+        std::lock_guard lock(mutex_);
+        return config_.detection;
+    }
+    [[nodiscard]] DetectionResults detectionResults() const
+    {
+        std::shared_lock lock(detectionMutex_);
+        return detections_;
+    }
     [[nodiscard]] double progress() const noexcept { return progress_.load(std::memory_order_acquire); }
     [[nodiscard]] AnalysisState state() const noexcept { return state_.load(std::memory_order_acquire); }
 
@@ -288,6 +333,7 @@ private:
         media::MediaInfoPtr info;
         std::unique_ptr<playback::PlaybackSession> session;
         std::unique_ptr<LumaExtractor> extractor;
+        std::size_t nextDetectionSampleCount = 1;
     };
 
     struct RangeOutcome final {
@@ -305,6 +351,7 @@ private:
             config.cache.maximumSamples,
             config.maximumInMemorySamples);
         config.deliveryBatchFrames = std::max<std::size_t>(1, config.deliveryBatchFrames);
+        config.detection = DetectionEngine::normalized(std::move(config.detection));
         if (!config.lumaSize.isValid() || config.lumaSize.width() <= 0
             || config.lumaSize.height() <= 0 || config.lumaSize.width() > 2'048
             || config.lumaSize.height() > 2'048) {
@@ -373,6 +420,32 @@ private:
         condition_.notify_all();
     }
 
+    void queueDetection()
+    {
+        std::lock_guard lock(mutex_);
+        if (!media_) {
+            return;
+        }
+        tasks_.erase(
+            std::remove_if(tasks_.begin(), tasks_.end(), [](const AnalysisTask& task) {
+                return task.kind == TaskKind::Detect;
+            }),
+            tasks_.end());
+        tasks_.push_back({
+            TaskKind::Detect,
+            AnalysisPriority::AroundPlayhead,
+            {},
+            {},
+            epoch_,
+            nextSequenceLocked(),
+        });
+        if (activeTask_ && activeTask_->kind == TaskKind::Range
+            && activeTask_->priority == AnalysisPriority::Background) {
+            activeCancellation_.requestCancellation();
+        }
+        condition_.notify_all();
+    }
+
     [[nodiscard]] std::uint64_t nextEpochLocked() noexcept
     {
         epoch_ = epoch_ == std::numeric_limits<std::uint64_t>::max() ? 1 : epoch_ + 1;
@@ -393,7 +466,7 @@ private:
                 return true;
             }
             return std::any_of(tasks_.begin(), tasks_.end(), [&](const AnalysisTask& task) {
-                return task.kind == TaskKind::Initialize || !suspendedLocked();
+                return task.kind != TaskKind::Range || !suspendedLocked();
             });
         });
         if (closing_ || stop.stop_requested()) {
@@ -402,7 +475,7 @@ private:
 
         auto best = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end(); ++candidate) {
-            if (candidate->kind != TaskKind::Initialize && suspendedLocked()) {
+            if (candidate->kind == TaskKind::Range && suspendedLocked()) {
                 continue;
             }
             if (best == tasks_.end() || taskPrecedes(*candidate, *best)) {
@@ -454,6 +527,11 @@ private:
                 finishTask();
                 continue;
             }
+            if (task->kind == TaskKind::Detect) {
+                rebuildDetections(task->epoch);
+                finishTask();
+                continue;
+            }
             if (task->epoch != context.epoch || !context.info) {
                 finishTask();
                 continue;
@@ -482,6 +560,9 @@ private:
 
             const bool complete = task->priority == AnalysisPriority::Background
                 && !outcome.cancelled && outcome.reachedEnd;
+            if (complete) {
+                rebuildDetections(task->epoch);
+            }
             (void)cache_.save(*context.info, store_.snapshot(), complete);
             if (complete) {
                 {
@@ -520,10 +601,13 @@ private:
         }
         store_.replace(std::move(document.samples));
         pyramid_.rebuild(store_.snapshot());
+        rebuildDetections(task.epoch);
         context.epoch = task.epoch;
         context.info = info;
         context.session = std::make_unique<playback::PlaybackSession>(config_.session);
         context.extractor = std::make_unique<LumaExtractor>(config_.lumaSize);
+        context.nextDetectionSampleCount = store_.size()
+            + std::max<std::size_t>(config_.deliveryBatchFrames, 1);
 
         const double restoredProgress = document.complete
             ? 1.0
@@ -630,6 +714,12 @@ private:
                     aligned.end,
                     store_.capacity());
                 pyramid_.replaceRange(batchStart, batchEnd, samples);
+                const std::size_t totalSamples = store_.size();
+                if (totalSamples >= context.nextDetectionSampleCount) {
+                    rebuildDetections(task.epoch);
+                    context.nextDetectionSampleCount = totalSamples
+                        + std::max<std::size_t>(128, totalSamples / 4);
+                }
                 postSamples(
                     static_cast<qint64>(batchStart.count()),
                     static_cast<qint64>(batchEnd.count()),
@@ -673,9 +763,14 @@ private:
                 sample.presentationIndex = frame->id.presentationIndex;
                 sample.pts = frame->id.pts;
                 sample.keyFrame = frame->keyFrame;
+                sample.contentHash = VideoAnalyzer::contentHash(current);
+                sample.perceptualHash = VideoAnalyzer::perceptualHash(current);
                 if (previous) {
-                    sample.motion = VideoAnalyzer::motionScore(*previous, current);
-                    sample.similarity = VideoAnalyzer::similarityScore(*previous, current);
+                    const auto metrics = VideoAnalyzer::compare(*previous, current);
+                    sample.motion = metrics.motion;
+                    sample.similarity = metrics.similarity;
+                    sample.sceneScore = metrics.sceneChange;
+                    sample.duplicateScore = metrics.duplicate;
                 }
 
                 if (frame->presentationTime >= task.start) {
@@ -735,6 +830,36 @@ private:
         condition_.notify_all();
     }
 
+    void rebuildDetections(const std::uint64_t epoch)
+    {
+        if (!acceptsEpoch(epoch)) {
+            return;
+        }
+        DetectionConfig config;
+        {
+            std::lock_guard lock(mutex_);
+            config = config_.detection;
+        }
+        auto detections = DetectionEngine::analyze(store_.snapshot(), config);
+        if (!acceptsEpoch(epoch)) {
+            return;
+        }
+        const std::size_t sceneCount = detections.scenes.size();
+        const std::size_t duplicateCount = detections.duplicates.size();
+        const std::size_t freezeCount = detections.freezes.size();
+        const std::size_t analyzedSamples = detections.analyzedSamples;
+        {
+            std::unique_lock lock(detectionMutex_);
+            detections_ = std::move(detections);
+        }
+        postDetections(
+            sceneCount,
+            duplicateCount,
+            freezeCount,
+            analyzedSamples,
+            epoch);
+    }
+
     void postSamples(
         const qint64 start,
         const qint64 end,
@@ -788,6 +913,29 @@ private:
             Qt::QueuedConnection);
     }
 
+    void postDetections(
+        const std::size_t sceneCount,
+        const std::size_t duplicateCount,
+        const std::size_t freezeCount,
+        const std::size_t analyzedSamples,
+        const std::uint64_t epoch) const
+    {
+        QPointer<AnalysisManager> guard(owner_);
+        QMetaObject::invokeMethod(
+            owner_,
+            [guard, sceneCount, duplicateCount, freezeCount, analyzedSamples, epoch] {
+                if (guard) {
+                    guard->deliverDetections(
+                        static_cast<quint64>(sceneCount),
+                        static_cast<quint64>(duplicateCount),
+                        static_cast<quint64>(freezeCount),
+                        static_cast<quint64>(analyzedSamples),
+                        static_cast<quint64>(epoch));
+                }
+            },
+            Qt::QueuedConnection);
+    }
+
     void postError(QString detail, const std::uint64_t epoch) const
     {
         QPointer<AnalysisManager> guard(owner_);
@@ -806,6 +954,8 @@ private:
     AnalysisStore store_;
     AnalysisPyramid pyramid_;
     AnalysisCache cache_;
+    mutable std::shared_mutex detectionMutex_;
+    DetectionResults detections_;
 
     mutable std::mutex mutex_;
     std::condition_variable_any condition_;
@@ -847,6 +997,7 @@ AnalysisManager::~AnalysisManager() = default;
 void AnalysisManager::setMedia(media::MediaInfoPtr info)
 {
     impl_->setMedia(std::move(info));
+    emit detectionsChanged(0, 0, 0, 0);
 }
 
 void AnalysisManager::clearMedia()
@@ -854,6 +1005,7 @@ void AnalysisManager::clearMedia()
     impl_->clearMedia();
     emit stateChanged(AnalysisState::Idle);
     emit progressChanged(0.0, 0);
+    emit detectionsChanged(0, 0, 0, 0);
 }
 
 void AnalysisManager::setPlaybackActive(const bool active)
@@ -876,6 +1028,16 @@ void AnalysisManager::requestVisibleRange(
     const qint64 endNanoseconds)
 {
     impl_->requestVisibleRange(startNanoseconds, endNanoseconds);
+}
+
+void AnalysisManager::setDetectionConfig(DetectionConfig config)
+{
+    impl_->setDetectionConfig(std::move(config));
+}
+
+void AnalysisManager::reanalyzeDetections()
+{
+    impl_->reanalyzeDetections();
 }
 
 std::optional<AnalysisSample> AnalysisManager::sampleFor(
@@ -901,6 +1063,16 @@ AnalysisLodView AnalysisManager::lodView(
     const std::size_t maximumBuckets) const
 {
     return impl_->lodView(startNanoseconds, endNanoseconds, maximumBuckets);
+}
+
+DetectionConfig AnalysisManager::detectionConfig() const
+{
+    return impl_->detectionConfig();
+}
+
+DetectionResults AnalysisManager::detectionResults() const
+{
+    return impl_->detectionResults();
 }
 
 qsizetype AnalysisManager::sampleCount() const noexcept
@@ -946,6 +1118,22 @@ void AnalysisManager::deliverState(const AnalysisState state, const quint64 epoc
 {
     if (impl_->acceptsEpoch(epoch)) {
         emit stateChanged(state);
+    }
+}
+
+void AnalysisManager::deliverDetections(
+    const quint64 sceneCount,
+    const quint64 duplicateCount,
+    const quint64 freezeCount,
+    const quint64 analyzedSamples,
+    const quint64 epoch)
+{
+    if (impl_->acceptsEpoch(epoch)) {
+        emit detectionsChanged(
+            sceneCount,
+            duplicateCount,
+            freezeCount,
+            analyzedSamples);
     }
 }
 

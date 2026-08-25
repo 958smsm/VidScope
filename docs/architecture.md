@@ -1,8 +1,8 @@
-# VidScope Phase 0-7 architecture
+# VidScope Phase 0-8 architecture
 
 VidScope is a C++20, Qt 6.11.2, direct-FFmpeg video inspection application.
-Phase 7 adds bounded hierarchical analysis aggregation and timeline heatmap
-rendering above the Phase 6 progressive motion/similarity pipeline without
+Phase 8 adds bounded scene, duplicate, repeated-section, and freeze detection
+above the progressive analysis and heatmap pipeline without
 weakening the frame-accurate playback, timestamp, ownership, preview,
 cancellation, or thread boundaries established earlier.
 
@@ -33,6 +33,8 @@ AnalysisManager (GUI API / thread-safe raw and LOD queries)
         |
         +-> AnalysisStore <---- HoverPreviewController / FilmstripController
         +-> AnalysisPyramid ---> TimelineWidget
+        +-> DetectionEngine ---> AnalysisResultsPanel
+                              +-> automatic TimelineModel scene markers
         |
         +-> one cancellable analysis worker
                 -> PlaybackSession -> LumaExtractor -> VideoAnalyzer
@@ -71,6 +73,13 @@ thread-safe `AnalysisPyramid` mirrors compact aggregates, not image data.
 Playback and active scrubbing suspend analysis decode. Batched GUI notifications
 let hover, filmstrip, and timeline consumers refresh without queueing one event
 per analyzed frame.
+
+Detection runs against a bounded sample snapshot, never against decoded image
+surfaces. A high-priority detection task can rebuild results after thresholds
+change without seeking or decoding again. Progressive decode schedules
+occasional detector refreshes at an increasing sample interval and a mandatory
+final refresh at completion. Result snapshots are protected independently from
+the raw store and exposed by value to GUI consumers.
 
 `TimelineHeatmapRenderer` is stateless and receives only a bounded LOD view,
 mode, and external combination weights. Motion and similarity remain separate
@@ -164,7 +173,9 @@ monotonic ID through sorting and updates, and removed or reset IDs are never
 reused. Keyframe, scene, chapter, and bookmark kinds share the bounded marker
 store. Observed decoded keyframes are an independent derived frame layer, so
 they do not consume stored-marker capacity. Scene-marker navigation is ready for
-externally supplied markers, while automatic detection remains Phase 8.
+detected scene markers are replaced from the latest detection snapshot.
+Previous/next scene actions query the same sorted marker store, so navigation
+and the visible scene lines cannot disagree.
 
 Selections normalize forward and reverse gestures into `start <= end` and are
 clamped to media extent. Selection details return exact first/last established
@@ -214,11 +225,19 @@ sources, and `std::jthread` joins provide deterministic pool shutdown.
 Analysis uses its own software-decoding `PlaybackSession` with a 32 MiB frame
 cache, a 16 MiB forward queue, and at most four queued frames. Each decoded
 surface is immediately reduced to a fixed 160x90 GRAY8 plane; only compact raw
-scores remain in `AnalysisStore`, which has a configurable hard sample cap.
+scores and 64-bit fingerprints remain in `AnalysisStore`, which has a
+configurable hard sample cap.
 Interactive ranges preempt background analysis, while playback and scrubbing
 pause it. Disk checkpoints use `QSaveFile`, a schema/algorithm version, source
 path/size/modification time, stream index, per-document bounds, and global LRU
 pruning.
+
+The detector caps output per kind, bounds fingerprint candidate history, and
+uses only compact sample metadata. Exact duplicate classification compares the
+downscaled-luma content hash; near duplicates and repeated sections use
+normalized similarity and bounded perceptual-hash distance. Freeze results also
+require configurable frame-count and duration minima. Scene candidates are
+thresholded local maxima with a minimum temporal separation.
 
 The heatmap pyramid caps level zero at 262,144 temporal buckets by default.
 Higher levels aggregate four children, so total storage is geometrically
@@ -263,5 +282,10 @@ bounded four-to-one hierarchy construction, pixel-density level selection,
 sparse-coverage rendering, persisted mode selection, and long-video primitive
 bounds. Unknown analysis regions remain visually empty.
 
-Phase 8 owns scene, duplicate, and freeze detection. Detailed inspection, audio
-rendering/A-V sync, and export also remain later phases.
+Phase 8 adds raw scene/duplicate scores and content/perceptual fingerprints,
+scene-score LOD aggregates, Scene Change heatmaps, the prompt's default
+Combined weights (motion `0.50`, similarity difference `0.30`, scene change
+`0.20`), bounded scene/duplicate/repeated/freeze detection, automatic scene
+markers and navigation, threshold-only reanalysis, seekable result lists, and
+background-priority scene thumbnails. Detailed inspection, audio rendering/A-V
+sync, and export remain later phases.

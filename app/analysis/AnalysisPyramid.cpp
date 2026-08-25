@@ -94,6 +94,13 @@ void AnalysisPyramid::accumulate(
         target.maxSimilarity = std::max(target.maxSimilarity, value);
         ++target.similarityCount;
     }
+    if (sample.sceneScore) {
+        const float value = std::clamp(*sample.sceneScore, 0.0F, 1.0F);
+        target.sceneSum += value;
+        target.minSceneScore = std::min(target.minSceneScore, value);
+        target.maxSceneScore = std::max(target.maxSceneScore, value);
+        ++target.sceneCount;
+    }
 }
 
 void AnalysisPyramid::merge(Accumulator& target, const Accumulator& source) noexcept
@@ -113,6 +120,12 @@ void AnalysisPyramid::merge(Accumulator& target, const Accumulator& source) noex
         target.minSimilarity = std::min(target.minSimilarity, source.minSimilarity);
         target.maxSimilarity = std::max(target.maxSimilarity, source.maxSimilarity);
         target.similarityCount += source.similarityCount;
+    }
+    if (source.sceneCount > 0) {
+        target.sceneSum += source.sceneSum;
+        target.minSceneScore = std::min(target.minSceneScore, source.minSceneScore);
+        target.maxSceneScore = std::max(target.maxSceneScore, source.maxSceneScore);
+        target.sceneCount += source.sceneCount;
     }
 }
 
@@ -314,6 +327,7 @@ AnalysisLodView AnalysisPyramid::view(
         bucket.sampleCount = source.sampleCount;
         bucket.motionCount = source.motionCount;
         bucket.similarityCount = source.similarityCount;
+        bucket.sceneCount = source.sceneCount;
         if (source.motionCount > 0) {
             bucket.minMotion = source.minMotion;
             bucket.maxMotion = source.maxMotion;
@@ -325,6 +339,12 @@ AnalysisLodView AnalysisPyramid::view(
             bucket.maxSimilarity = source.maxSimilarity;
             bucket.averageSimilarity = static_cast<float>(
                 source.similaritySum / static_cast<double>(source.similarityCount));
+        }
+        if (source.sceneCount > 0) {
+            bucket.minSceneScore = source.minSceneScore;
+            bucket.maxSceneScore = source.maxSceneScore;
+            bucket.averageSceneScore = static_cast<float>(
+                source.sceneSum / static_cast<double>(source.sceneCount));
         }
         result.buckets.push_back(bucket);
     }

@@ -3,11 +3,13 @@
 #include "analysis/AnalysisCache.h"
 #include "analysis/AnalysisPyramid.h"
 #include "analysis/AnalysisTypes.h"
+#include "analysis/DetectionEngine.h"
 #include "analysis/VideoAnalyzer.h"
 
 #include <QtCore/QFile>
 #include <QtCore/QTemporaryDir>
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -23,6 +25,9 @@ using vidscope::analysis::AnalysisPyramid;
 using vidscope::analysis::AnalysisPyramidConfig;
 using vidscope::analysis::AnalysisSample;
 using vidscope::analysis::AnalysisStore;
+using vidscope::analysis::DetectionConfig;
+using vidscope::analysis::DetectionEngine;
+using vidscope::analysis::DetectionKind;
 using vidscope::analysis::LumaPlane;
 using vidscope::analysis::VideoAnalyzer;
 
@@ -78,6 +83,22 @@ VIDSCOPE_TEST(VideoAnalyzer_normalizes_partial_change)
     VIDSCOPE_REQUIRE(std::abs(motion - 0.5F) < 0.001F);
     VIDSCOPE_REQUIRE(similarity > 0.4F);
     VIDSCOPE_REQUIRE(similarity < 0.6F);
+}
+
+VIDSCOPE_TEST(VideoAnalyzer_exposes_scene_duplicate_and_stable_fingerprint_metrics)
+{
+    const auto black = plane(0);
+    const auto white = plane(255);
+    const auto identical = VideoAnalyzer::compare(black, black);
+    const auto cut = VideoAnalyzer::compare(black, white);
+    VIDSCOPE_REQUIRE(identical.duplicate == 1.0F);
+    VIDSCOPE_REQUIRE(identical.sceneChange == 0.0F);
+    VIDSCOPE_REQUIRE(cut.sceneChange > 0.99F);
+    VIDSCOPE_REQUIRE(cut.duplicate < 0.01F);
+    VIDSCOPE_REQUIRE(VideoAnalyzer::contentHash(black) == VideoAnalyzer::contentHash(black));
+    VIDSCOPE_REQUIRE(VideoAnalyzer::contentHash(black) != VideoAnalyzer::contentHash(white));
+    VIDSCOPE_REQUIRE(VideoAnalyzer::perceptualHash(black)
+        != VideoAnalyzer::perceptualHash(white));
 }
 
 VIDSCOPE_TEST(AnalysisStore_orders_upserts_and_bounds_raw_samples)
@@ -158,6 +179,92 @@ VIDSCOPE_TEST(AnalysisPyramid_caps_long_video_storage_and_pixel_primitives)
     VIDSCOPE_REQUIRE(singlePixelView.buckets.size() <= 1);
 }
 
+VIDSCOPE_TEST(DetectionEngine_detects_scene_peaks_exact_near_and_freeze_ranges)
+{
+    std::vector<AnalysisSample> samples;
+    for (std::int64_t index = 0; index < 10; ++index) {
+        auto value = sample(index, std::chrono::milliseconds(index * 100));
+        value.duration = 100ms;
+        value.sceneScore = 0.05F;
+        value.duplicateScore = 0.2F;
+        value.contentHash = static_cast<std::uint64_t>(index + 1);
+        value.perceptualHash = static_cast<std::uint64_t>(index + 1);
+        samples.push_back(value);
+    }
+    samples[3].sceneScore = 0.85F;
+    samples[4].sceneScore = 0.60F;
+    for (std::size_t index = 0; index < 4; ++index) {
+        samples[index].contentHash = 77U;
+        samples[index].perceptualHash = 77U;
+        if (index > 0) {
+            samples[index].duplicateScore = 1.0F;
+        }
+    }
+    samples[4].duplicateScore = 0.99F;
+    samples[5].duplicateScore = 0.99F;
+    samples[6].duplicateScore = 0.99F;
+
+    DetectionConfig config;
+    config.sceneThreshold = 0.5F;
+    config.minimumSceneSeparation = 200ms;
+    config.nearDuplicateThreshold = 0.98F;
+    config.freezeThreshold = 0.995F;
+    config.minimumFreezeDuration = 300ms;
+    config.minimumFreezeFrames = 3;
+    config.minimumRepeatedSeparation = 10s;
+    const auto results = DetectionEngine::analyze(samples, config);
+
+    VIDSCOPE_REQUIRE(results.scenes.size() == 2);
+    VIDSCOPE_REQUIRE(results.scenes[1].firstFrame == 3);
+    const auto exact = std::find_if(
+        results.duplicates.cbegin(),
+        results.duplicates.cend(),
+        [](const auto& result) { return result.kind == DetectionKind::ExactDuplicate; });
+    const auto near = std::find_if(
+        results.duplicates.cbegin(),
+        results.duplicates.cend(),
+        [](const auto& result) { return result.kind == DetectionKind::NearDuplicate; });
+    VIDSCOPE_REQUIRE(exact != results.duplicates.cend());
+    VIDSCOPE_REQUIRE(exact->firstFrame == 0);
+    VIDSCOPE_REQUIRE(exact->lastFrame == 3);
+    VIDSCOPE_REQUIRE(near != results.duplicates.cend());
+    VIDSCOPE_REQUIRE(near->firstFrame == 3);
+    VIDSCOPE_REQUIRE(near->lastFrame == 6);
+    VIDSCOPE_REQUIRE(results.freezes.size() == 1);
+    VIDSCOPE_REQUIRE(results.freezes.front().frameCount == 4);
+}
+
+VIDSCOPE_TEST(DetectionEngine_finds_bounded_non_adjacent_repeated_sections)
+{
+    std::vector<AnalysisSample> samples;
+    constexpr std::uint64_t hashes[] = {11, 22, 33, 90, 91, 92, 11, 22, 33};
+    for (std::int64_t index = 0; index < 9; ++index) {
+        auto value = sample(index, std::chrono::milliseconds(index * 100));
+        value.duration = 100ms;
+        value.sceneScore = 0.0F;
+        value.duplicateScore = 0.1F;
+        value.contentHash = hashes[index];
+        value.perceptualHash = hashes[index];
+        samples.push_back(value);
+    }
+    DetectionConfig config;
+    config.sceneThreshold = 1.0F;
+    config.minimumRepeatedFrames = 3;
+    config.minimumRepeatedSeparation = 500ms;
+    config.maximumResultsPerKind = 4;
+    const auto results = DetectionEngine::analyze(samples, config);
+    const auto repeated = std::find_if(
+        results.duplicates.cbegin(),
+        results.duplicates.cend(),
+        [](const auto& result) { return result.kind == DetectionKind::RepeatedSection; });
+    VIDSCOPE_REQUIRE(repeated != results.duplicates.cend());
+    VIDSCOPE_REQUIRE(repeated->firstFrame == 6);
+    VIDSCOPE_REQUIRE(repeated->lastFrame == 8);
+    VIDSCOPE_REQUIRE(repeated->matchingFirstFrame == 0);
+    VIDSCOPE_REQUIRE(repeated->matchingLastFrame == 2);
+    VIDSCOPE_REQUIRE(results.duplicates.size() <= config.maximumResultsPerKind);
+}
+
 VIDSCOPE_TEST(AnalysisCache_round_trips_versioned_compact_samples)
 {
     QTemporaryDir directory;
@@ -181,6 +288,10 @@ VIDSCOPE_TEST(AnalysisCache_round_trips_versioned_compact_samples)
     std::vector<AnalysisSample> samples{sample(0, 0ms), sample(1, 40ms)};
     samples.front().motion.reset();
     samples.front().similarity.reset();
+    samples.back().sceneScore = 0.75F;
+    samples.back().duplicateScore = 0.25F;
+    samples.back().contentHash = 0x1234U;
+    samples.back().perceptualHash = 0x5678U;
     VIDSCOPE_REQUIRE(cache.save(info, samples, true));
 
     const auto restored = cache.load(info);

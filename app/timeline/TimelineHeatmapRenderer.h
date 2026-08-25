@@ -14,12 +14,14 @@ namespace vidscope::timeline {
 enum class HeatmapMode : std::uint8_t {
     Motion,
     Similarity,
+    SceneChange,
     Combined,
 };
 
 struct CombinedHeatmapWeights final {
     float motion = 0.50F;
     float similarityDifference = 0.30F;
+    float sceneChange = 0.20F;
 
     friend bool operator==(
         const CombinedHeatmapWeights&,

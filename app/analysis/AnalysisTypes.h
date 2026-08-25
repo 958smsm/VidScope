@@ -33,12 +33,16 @@ struct AnalysisSample final {
     bool keyFrame = false;
     std::optional<float> motion;
     std::optional<float> similarity;
+    std::optional<float> sceneScore;
+    std::optional<float> duplicateScore;
+    std::optional<std::uint64_t> contentHash;
+    std::optional<std::uint64_t> perceptualHash;
 
     friend bool operator==(const AnalysisSample&, const AnalysisSample&) = default;
 };
 
-// A compact, thread-safe raw-sample store. Phase 7 will build LOD aggregates
-// above this layer; Phase 6 deliberately keeps the original scores intact.
+// A compact, thread-safe raw-sample store. LOD and detection layers derive
+// their own views while the original per-frame scores and hashes stay intact.
 class AnalysisStore final {
 public:
     explicit AnalysisStore(std::size_t maximumSamples = 2'000'000);

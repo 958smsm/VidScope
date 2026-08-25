@@ -20,6 +20,13 @@ struct LumaPlane final {
     [[nodiscard]] bool isValid() const noexcept;
 };
 
+struct FrameAnalysisMetrics final {
+    float motion = 0.0F;
+    float similarity = 0.0F;
+    float sceneChange = 0.0F;
+    float duplicate = 0.0F;
+};
+
 class LumaExtractor final {
 public:
     explicit LumaExtractor(QSize outputSize = QSize(160, 90));
@@ -40,13 +47,17 @@ private:
 
 class VideoAnalyzer final {
 public:
+    [[nodiscard]] static FrameAnalysisMetrics compare(
+        const LumaPlane& previous,
+        const LumaPlane& current);
     [[nodiscard]] static float motionScore(
         const LumaPlane& previous,
         const LumaPlane& current);
     [[nodiscard]] static float similarityScore(
         const LumaPlane& previous,
         const LumaPlane& current);
+    [[nodiscard]] static std::uint64_t contentHash(const LumaPlane& plane);
+    [[nodiscard]] static std::uint64_t perceptualHash(const LumaPlane& plane);
 };
 
 } // namespace vidscope::analysis
-

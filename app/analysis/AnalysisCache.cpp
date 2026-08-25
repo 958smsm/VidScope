@@ -26,8 +26,8 @@ namespace vidscope::analysis {
 namespace {
 
 constexpr quint32 kDiskMagic = 0x5653414EU; // "VSAN"
-constexpr quint16 kDiskSchemaVersion = 1U;
-constexpr quint16 kAlgorithmVersion = 1U;
+constexpr quint16 kDiskSchemaVersion = 2U;
+constexpr quint16 kAlgorithmVersion = 2U;
 
 [[nodiscard]] QString pathToQString(const std::filesystem::path& path)
 {
@@ -132,8 +132,20 @@ public:
             float motion = 0.0F;
             bool hasSimilarity = false;
             float similarity = 0.0F;
+            bool hasSceneScore = false;
+            float sceneScore = 0.0F;
+            bool hasDuplicateScore = false;
+            float duplicateScore = 0.0F;
+            bool hasContentHash = false;
+            quint64 contentHash = 0;
+            bool hasPerceptualHash = false;
+            quint64 perceptualHash = 0;
             stream >> time >> duration >> presentationIndex >> pts >> keyFrame
-                >> hasMotion >> motion >> hasSimilarity >> similarity;
+                >> hasMotion >> motion >> hasSimilarity >> similarity
+                >> hasSceneScore >> sceneScore
+                >> hasDuplicateScore >> duplicateScore
+                >> hasContentHash >> contentHash
+                >> hasPerceptualHash >> perceptualHash;
             sample.presentationTime = media::MediaTime(time);
             sample.duration = media::MediaTime(duration);
             sample.presentationIndex = presentationIndex;
@@ -145,9 +157,22 @@ public:
             if (hasSimilarity) {
                 sample.similarity = similarity;
             }
+            if (hasSceneScore) {
+                sample.sceneScore = sceneScore;
+            }
+            if (hasDuplicateScore) {
+                sample.duplicateScore = duplicateScore;
+            }
+            if (hasContentHash) {
+                sample.contentHash = static_cast<std::uint64_t>(contentHash);
+            }
+            if (hasPerceptualHash) {
+                sample.perceptualHash = static_cast<std::uint64_t>(perceptualHash);
+            }
             if (sample.presentationTime < media::MediaTime::zero()
                 || sample.duration < media::MediaTime::zero()
-                || !validScore(sample.motion) || !validScore(sample.similarity)) {
+                || !validScore(sample.motion) || !validScore(sample.similarity)
+                || !validScore(sample.sceneScore) || !validScore(sample.duplicateScore)) {
                 stream.setStatus(QDataStream::ReadCorruptData);
                 break;
             }
@@ -179,7 +204,7 @@ public:
             return false;
         }
 
-        constexpr std::size_t approximateSerializedSampleBytes = 48;
+        constexpr std::size_t approximateSerializedSampleBytes = 80;
         if (samples.size() > config_.maximumDocumentBytes / approximateSerializedSampleBytes) {
             qCWarning(logCache) << "Analysis cache document exceeds its configured bound";
             return false;
@@ -203,7 +228,8 @@ public:
         for (const auto& sample : samples) {
             if (sample.presentationTime < media::MediaTime::zero()
                 || sample.duration < media::MediaTime::zero()
-                || !validScore(sample.motion) || !validScore(sample.similarity)) {
+                || !validScore(sample.motion) || !validScore(sample.similarity)
+                || !validScore(sample.sceneScore) || !validScore(sample.duplicateScore)) {
                 file.cancelWriting();
                 return false;
             }
@@ -213,7 +239,13 @@ public:
                    << static_cast<qint64>(sample.pts)
                    << sample.keyFrame
                    << sample.motion.has_value() << sample.motion.value_or(0.0F)
-                   << sample.similarity.has_value() << sample.similarity.value_or(0.0F);
+                   << sample.similarity.has_value() << sample.similarity.value_or(0.0F)
+                   << sample.sceneScore.has_value() << sample.sceneScore.value_or(0.0F)
+                   << sample.duplicateScore.has_value() << sample.duplicateScore.value_or(0.0F)
+                   << sample.contentHash.has_value()
+                   << static_cast<quint64>(sample.contentHash.value_or(0))
+                   << sample.perceptualHash.has_value()
+                   << static_cast<quint64>(sample.perceptualHash.value_or(0));
         }
 
         if (stream.status() != QDataStream::Ok
@@ -346,4 +378,3 @@ void AnalysisCache::prune()
 }
 
 } // namespace vidscope::analysis
-
