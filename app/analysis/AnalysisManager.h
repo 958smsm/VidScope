@@ -1,6 +1,7 @@
 #pragma once
 
 #include "analysis/AnalysisCache.h"
+#include "analysis/AnalysisPyramid.h"
 #include "analysis/AnalysisTypes.h"
 #include "media/MediaTypes.h"
 #include "playback/PlaybackSession.h"
@@ -21,6 +22,7 @@ struct AnalysisManagerConfig final {
     media::MediaTime playheadRadius = std::chrono::seconds(2);
     media::MediaTime rangePreroll = std::chrono::seconds(1);
     std::size_t deliveryBatchFrames = 32;
+    AnalysisPyramidConfig pyramid;
     playback::PlaybackSessionConfig session;
     AnalysisCacheConfig cache;
 };
@@ -51,6 +53,10 @@ public:
         qint64 startNanoseconds,
         qint64 endNanoseconds,
         std::size_t maximumResults = 100'000) const;
+    [[nodiscard]] AnalysisLodView lodView(
+        qint64 startNanoseconds,
+        qint64 endNanoseconds,
+        std::size_t maximumBuckets) const;
     [[nodiscard]] qsizetype sampleCount() const noexcept;
     [[nodiscard]] double progress() const noexcept;
     [[nodiscard]] AnalysisState state() const noexcept;

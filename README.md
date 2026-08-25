@@ -6,7 +6,7 @@ timestamps, B-frame reordering, VFR navigation, seek behavior, decoded-frame
 ownership, timeline coordinates, thumbnail generation, and cache policy under
 application control.
 
-The implemented milestone is Phase 0-6. It includes media opening, direct
+The implemented milestone is Phase 0-7. It includes media opening, direct
 demux/decode, optional hardware decoding with CPU fallback, bounded frame
 history and forward queues, cancellable keyframe-based seek, exact
 next/previous and signed N-frame navigation, keyframe navigation,
@@ -19,7 +19,10 @@ and disk caches, retry still-current cells after bounded-scheduler preemption,
 and never create one QWidget or decoder per frame. A separate progressive
 analysis worker decodes presentation-order frames into bounded 160x90 luma
 planes, computes raw motion and similarity scores, persists a versioned cache,
-and yields to playback and active scrubbing.
+and yields to playback and active scrubbing. A bounded 4x temporal LOD pyramid
+incrementally aggregates those raw scores, and the custom timeline renders
+Motion, Similarity, or configurable Combined heatmaps without painting one
+primitive per frame at overview zoom.
 
 ## Prerequisites
 
@@ -90,6 +93,10 @@ Timeline:
 - `Ctrl+Shift+X`: clear selection; `Ctrl+0`: show the entire video
 - configured Zoom In/Out shortcuts: zoom around the visible playhead, or the
   viewport center when the playhead is outside it
+- **Analysis > Motion / Similarity / Combined**: switch the timeline heatmap;
+  the selected mode persists across sessions
+- the heatmap selects a temporal LOD level from the current pixel density,
+  preserves unknown analysis gaps, and refines progressively as batches arrive
 
 Filmstrip:
 
@@ -120,14 +127,14 @@ analysis batches arrive; no placeholder values are fabricated.
 - [Phase 4 final review](docs/phase-4-review.md)
 - [Phase 5 final review](docs/phase-5-review.md)
 - [Phase 6 final review](docs/phase-6-review.md)
+- [Phase 7 final review](docs/phase-7-review.md)
 
-Phase 6 is the completed video-analysis milestone. `AnalysisManager` owns one
-cancellable low-priority decoder worker, `LumaExtractor` performs bounded FFmpeg
-downscaling, `VideoAnalyzer` keeps motion and similarity algorithms independently
-testable, `AnalysisStore` exposes thread-safe raw samples, and `AnalysisCache`
-persists versioned results keyed to the source file and selected stream. Phase 7
-heatmap/LOD rendering, automatic scene and duplicate/freeze detection, audio
-rendering/A-V sync, the full frame inspector, and export remain later phases.
+Phase 7 is the completed heatmap milestone. `AnalysisManager` still owns the
+cancellable low-priority decoder worker and authoritative raw sample store, while
+`AnalysisPyramid` maintains bounded temporal aggregates and
+`TimelineHeatmapRenderer` paints only the LOD buckets needed for the current
+viewport. Automatic scene and duplicate/freeze detection, audio rendering/A-V
+sync, the full frame inspector, and export remain later phases.
 
 Known timeline frame boundaries and keyframe ticks still grow only from exact
 frames published by the playback engine; opening a video does not force a

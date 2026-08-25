@@ -13,6 +13,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
 #include <QtGui/QAction>
+#include <QtGui/QActionGroup>
 #include <QtGui/QFontDatabase>
 #include <QtGui/QIcon>
 #include <QtGui/QIntValidator>
@@ -137,6 +138,7 @@ MainWindow::MainWindow(QWidget* parent)
     createShortcuts();
 
     analysisManager_ = new analysis::AnalysisManager({}, this);
+    timeline_->setAnalysisManager(analysisManager_);
     thumbnailManager_ = new thumbnails::ThumbnailManager({}, this);
     thumbnailManager_->setObjectName(QStringLiteral("thumbnailManager"));
     filmstripController_ = new FilmstripController(
@@ -207,6 +209,25 @@ MainWindow::MainWindow(QWidget* parent)
         });
 
     QSettings initialSettings;
+    timeline::HeatmapMode savedHeatmapMode = timeline::HeatmapMode::Combined;
+    switch (static_cast<timeline::HeatmapMode>(
+        initialSettings.value(
+            QStringLiteral("analysis/heatmapMode"),
+            static_cast<int>(timeline::HeatmapMode::Combined)).toInt())) {
+    case timeline::HeatmapMode::Motion:
+        savedHeatmapMode = timeline::HeatmapMode::Motion;
+        actionByName(this, "actionHeatmapMotion")->setChecked(true);
+        break;
+    case timeline::HeatmapMode::Similarity:
+        savedHeatmapMode = timeline::HeatmapMode::Similarity;
+        actionByName(this, "actionHeatmapSimilarity")->setChecked(true);
+        break;
+    case timeline::HeatmapMode::Combined:
+        actionByName(this, "actionHeatmapCombined")->setChecked(true);
+        break;
+    }
+    timeline_->setHeatmapMode(savedHeatmapMode);
+
     const int savedMode = initialSettings.value(
         QStringLiteral("filmstrip/mode"),
         static_cast<int>(filmstrip::FilmstripMode::EntireVideo)).toInt();
@@ -384,6 +405,11 @@ MainWindow::~MainWindow()
             QStringLiteral("filmstrip/count"),
             static_cast<qulonglong>(filmstripController_->count()));
     }
+    if (timeline_ != nullptr) {
+        settings.setValue(
+            QStringLiteral("analysis/heatmapMode"),
+            static_cast<int>(timeline_->heatmapMode()));
+    }
 
     // Join all decode workers while their GUI receivers are still alive.
     delete hoverPreviewController_;
@@ -520,6 +546,34 @@ void MainWindow::createActions()
             filmstripController_->refreshNow();
         }
     });
+
+    auto* heatmapModes = new QActionGroup(this);
+    heatmapModes->setObjectName(QStringLiteral("heatmapModeGroup"));
+    heatmapModes->setExclusive(true);
+    const auto createHeatmapMode = [&](const char* name, const QString& text, const auto mode) {
+        auto* action = createAction(name, text);
+        action->setCheckable(true);
+        heatmapModes->addAction(action);
+        connect(action, &QAction::triggered, this, [this, mode] {
+            if (timeline_ != nullptr) {
+                timeline_->setHeatmapMode(mode);
+            }
+        });
+        return action;
+    };
+    (void)createHeatmapMode(
+        "actionHeatmapMotion",
+        tr("&Motion"),
+        timeline::HeatmapMode::Motion);
+    (void)createHeatmapMode(
+        "actionHeatmapSimilarity",
+        tr("&Similarity"),
+        timeline::HeatmapMode::Similarity);
+    auto* combinedHeatmap = createHeatmapMode(
+        "actionHeatmapCombined",
+        tr("&Combined"),
+        timeline::HeatmapMode::Combined);
+    combinedHeatmap->setChecked(true);
 
     auto* fullscreen = createAction("actionFullscreen", tr("&Full Screen"));
     fullscreen->setCheckable(true);
@@ -825,6 +879,11 @@ void MainWindow::createMenus()
     timelineMenu->addAction(actionByName(this, "actionAddMarker"));
     timelineMenu->addSeparator();
     timelineMenu->addAction(actionByName(this, "actionRefreshFilmstrip"));
+
+    auto* analysisMenu = menuBar()->addMenu(tr("&Analysis"));
+    analysisMenu->addAction(actionByName(this, "actionHeatmapMotion"));
+    analysisMenu->addAction(actionByName(this, "actionHeatmapSimilarity"));
+    analysisMenu->addAction(actionByName(this, "actionHeatmapCombined"));
 
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(actionByName(this, "actionFullscreen"));

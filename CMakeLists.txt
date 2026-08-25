@@ -6,8 +6,8 @@ endif()
 
 project(
     VidScope
-    VERSION 0.6.0
-    DESCRIPTION "Frame-accurate professional video inspection with progressive video analysis"
+    VERSION 0.7.0
+    DESCRIPTION "Frame-accurate professional video inspection with progressive analysis heatmaps"
     LANGUAGES CXX
 )
 
@@ -39,6 +39,7 @@ target_sources(
     PRIVATE
         app/analysis/AnalysisCache.cpp
         app/analysis/AnalysisManager.cpp
+        app/analysis/AnalysisPyramid.cpp
         app/analysis/AnalysisTypes.cpp
         app/analysis/VideoAnalyzer.cpp
         app/core/Logging.cpp
@@ -63,6 +64,7 @@ target_sources(
         FILES
             app/analysis/AnalysisCache.h
             app/analysis/AnalysisManager.h
+            app/analysis/AnalysisPyramid.h
             app/analysis/AnalysisTypes.h
             app/analysis/VideoAnalyzer.h
             app/core/Cancellation.h
@@ -105,6 +107,7 @@ target_sources(
     vidscope_ui
     PRIVATE
         app/render/VideoViewport.cpp
+        app/timeline/TimelineHeatmapRenderer.cpp
         app/timeline/TimelineWidget.cpp
         app/widgets/FilmstripController.cpp
         app/widgets/FilmstripWidget.cpp
@@ -117,6 +120,7 @@ target_sources(
         BASE_DIRS app
         FILES
             app/render/VideoViewport.h
+            app/timeline/TimelineHeatmapRenderer.h
             app/timeline/TimelineWidget.h
             app/widgets/FilmstripController.h
             app/widgets/FilmstripWidget.h

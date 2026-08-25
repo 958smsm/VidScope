@@ -1,13 +1,19 @@
 #pragma once
 
+#include "timeline/TimelineHeatmapRenderer.h"
 #include "timeline/TimelineModel.h"
 
 #include <QtCore/QPoint>
 #include <QtCore/QPointF>
+#include <QtCore/QPointer>
 #include <QtWidgets/QWidget>
 
 #include <cstdint>
 #include <optional>
+
+namespace vidscope::analysis {
+class AnalysisManager;
+}
 
 namespace vidscope::timeline {
 
@@ -20,8 +26,13 @@ public:
     void setDuration(qint64 nanoseconds);
     void setPosition(qint64 nanoseconds);
     void observeFrame(const media::DecodedFrame& frame);
+    void setAnalysisManager(analysis::AnalysisManager* manager);
+    void setHeatmapMode(HeatmapMode mode);
+    void setCombinedHeatmapWeights(CombinedHeatmapWeights weights);
 
     [[nodiscard]] const TimelineModel& model() const noexcept;
+    [[nodiscard]] HeatmapMode heatmapMode() const noexcept;
+    [[nodiscard]] CombinedHeatmapWeights combinedHeatmapWeights() const noexcept;
     [[nodiscard]] std::optional<std::uint64_t> addMarker(
         qint64 nanoseconds,
         TimelineMarkerKind kind,
@@ -86,6 +97,10 @@ private:
     void updateCursorForMode();
 
     TimelineModel model_;
+    QPointer<analysis::AnalysisManager> analysisManager_;
+    TimelineHeatmapRenderer heatmapRenderer_;
+    HeatmapMode heatmapMode_ = HeatmapMode::Combined;
+    CombinedHeatmapWeights combinedHeatmapWeights_;
     InteractionMode interaction_ = InteractionMode::None;
     QPointF pressPosition_;
     media::MediaTime selectionAnchor_{};

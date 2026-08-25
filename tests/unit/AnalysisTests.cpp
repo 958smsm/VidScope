@@ -1,6 +1,7 @@
 #include "TestHarness.h"
 
 #include "analysis/AnalysisCache.h"
+#include "analysis/AnalysisPyramid.h"
 #include "analysis/AnalysisTypes.h"
 #include "analysis/VideoAnalyzer.h"
 
@@ -18,6 +19,8 @@ namespace {
 
 using vidscope::analysis::AnalysisCache;
 using vidscope::analysis::AnalysisCacheConfig;
+using vidscope::analysis::AnalysisPyramid;
+using vidscope::analysis::AnalysisPyramidConfig;
 using vidscope::analysis::AnalysisSample;
 using vidscope::analysis::AnalysisStore;
 using vidscope::analysis::LumaPlane;
@@ -99,6 +102,62 @@ VIDSCOPE_TEST(AnalysisStore_orders_upserts_and_bounds_raw_samples)
     VIDSCOPE_REQUIRE(range[1].presentationIndex == 2);
 }
 
+VIDSCOPE_TEST(AnalysisPyramid_builds_four_to_one_levels_and_preserves_raw_statistics)
+{
+    AnalysisPyramidConfig config;
+    config.maximumBaseBuckets = 16;
+    AnalysisPyramid pyramid(config);
+    pyramid.reset(16s, 16);
+
+    std::vector<AnalysisSample> samples;
+    for (std::int64_t index = 0; index < 16; ++index) {
+        samples.push_back(sample(index, std::chrono::seconds(index)));
+    }
+    pyramid.rebuild(samples);
+
+    const auto overview = pyramid.view(0s, 16s, 4);
+    VIDSCOPE_REQUIRE(overview.level == 1);
+    VIDSCOPE_REQUIRE(overview.sourceBucketsPerBucket == 4);
+    VIDSCOPE_REQUIRE(overview.buckets.size() == 4);
+    VIDSCOPE_REQUIRE(overview.buckets.front().sampleCount == 4);
+    VIDSCOPE_REQUIRE(std::abs(overview.buckets.front().averageMotion - 0.015F) < 0.0001F);
+    VIDSCOPE_REQUIRE(overview.buckets.front().minMotion == 0.0F);
+    VIDSCOPE_REQUIRE(std::abs(overview.buckets.front().maxMotion - 0.03F) < 0.0001F);
+    VIDSCOPE_REQUIRE(std::abs(overview.buckets.front().averageSimilarity - 0.985F) < 0.0001F);
+
+    auto replacement = sample(5, 5s);
+    replacement.motion = 1.0F;
+    replacement.similarity = 0.0F;
+    const std::vector<AnalysisSample> replacementRange{replacement};
+    pyramid.replaceRange(5s, 5s, replacementRange);
+    const auto updated = pyramid.view(0s, 16s, 4);
+    VIDSCOPE_REQUIRE(updated.buckets[1].sampleCount == 4);
+    VIDSCOPE_REQUIRE(std::abs(updated.buckets[1].averageMotion - 0.2925F) < 0.0001F);
+}
+
+VIDSCOPE_TEST(AnalysisPyramid_caps_long_video_storage_and_pixel_primitives)
+{
+    AnalysisPyramidConfig config;
+    config.maximumBaseBuckets = 1'024;
+    AnalysisPyramid pyramid(config);
+    pyramid.reset(24h, 10'000'000);
+    VIDSCOPE_REQUIRE(pyramid.baseBucketCount() <= config.maximumBaseBuckets);
+    VIDSCOPE_REQUIRE(pyramid.levelCount() >= 6);
+
+    std::vector<AnalysisSample> samples;
+    samples.reserve(1'024);
+    for (std::int64_t index = 0; index < 1'024; ++index) {
+        samples.push_back(sample(index, std::chrono::seconds(index * 84)));
+    }
+    pyramid.rebuild(samples);
+
+    const auto desktopWidthView = pyramid.view(0s, 24h, 320);
+    VIDSCOPE_REQUIRE(desktopWidthView.level > 0);
+    VIDSCOPE_REQUIRE(desktopWidthView.buckets.size() <= 320);
+    const auto singlePixelView = pyramid.view(0s, 24h, 1);
+    VIDSCOPE_REQUIRE(singlePixelView.buckets.size() <= 1);
+}
+
 VIDSCOPE_TEST(AnalysisCache_round_trips_versioned_compact_samples)
 {
     QTemporaryDir directory;
@@ -133,4 +192,3 @@ VIDSCOPE_TEST(AnalysisCache_round_trips_versioned_compact_samples)
     mediaFile.close();
     VIDSCOPE_REQUIRE(cache.load(info).samples.empty());
 }
-

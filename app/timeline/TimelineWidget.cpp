@@ -1,5 +1,7 @@
 #include "timeline/TimelineWidget.h"
 
+#include "analysis/AnalysisManager.h"
+
 #include <QtCore/QEvent>
 #include <QtGui/QFontMetricsF>
 #include <QtGui/QFocusEvent>
@@ -124,6 +126,19 @@ constexpr std::size_t kMaximumFramePrimitives = 4'096;
     return model.viewportStart() + model.visibleDuration() / 2;
 }
 
+[[nodiscard]] QString heatmapModeName(const HeatmapMode mode)
+{
+    switch (mode) {
+    case HeatmapMode::Motion:
+        return TimelineWidget::tr("Motion");
+    case HeatmapMode::Similarity:
+        return TimelineWidget::tr("Similarity");
+    case HeatmapMode::Combined:
+        return TimelineWidget::tr("Combined");
+    }
+    return {};
+}
+
 } // namespace
 
 TimelineWidget::TimelineWidget(QWidget* parent)
@@ -179,6 +194,67 @@ void TimelineWidget::observeFrame(const media::DecodedFrame& frame)
     if (model_.observeFrame(frame)) {
         update();
     }
+}
+
+void TimelineWidget::setAnalysisManager(analysis::AnalysisManager* manager)
+{
+    if (analysisManager_ == manager) {
+        return;
+    }
+    if (analysisManager_) {
+        disconnect(analysisManager_, nullptr, this, nullptr);
+    }
+    analysisManager_ = manager;
+    if (analysisManager_) {
+        connect(
+            analysisManager_,
+            &analysis::AnalysisManager::samplesAvailable,
+            this,
+            [this](qint64, qint64, quint64) { update(); });
+        connect(
+            analysisManager_,
+            &analysis::AnalysisManager::stateChanged,
+            this,
+            [this](analysis::AnalysisState) { update(); });
+    }
+    update();
+}
+
+void TimelineWidget::setHeatmapMode(const HeatmapMode mode)
+{
+    switch (mode) {
+    case HeatmapMode::Motion:
+    case HeatmapMode::Similarity:
+    case HeatmapMode::Combined:
+        break;
+    }
+    if (heatmapMode_ == mode) {
+        return;
+    }
+    heatmapMode_ = mode;
+    setToolTip(tr("%1 analysis heatmap").arg(heatmapModeName(mode)));
+    update();
+}
+
+void TimelineWidget::setCombinedHeatmapWeights(CombinedHeatmapWeights weights)
+{
+    weights.motion = std::max(0.0F, weights.motion);
+    weights.similarityDifference = std::max(0.0F, weights.similarityDifference);
+    if (combinedHeatmapWeights_ == weights) {
+        return;
+    }
+    combinedHeatmapWeights_ = weights;
+    update();
+}
+
+HeatmapMode TimelineWidget::heatmapMode() const noexcept
+{
+    return heatmapMode_;
+}
+
+CombinedHeatmapWeights TimelineWidget::combinedHeatmapWeights() const noexcept
+{
+    return combinedHeatmapWeights_;
 }
 
 const TimelineModel& TimelineWidget::model() const noexcept
@@ -529,6 +605,27 @@ void TimelineWidget::paintEvent(QPaintEvent* event)
         return;
     }
 
+    std::optional<std::size_t> paintedLodLevel;
+    if (analysisManager_) {
+        const std::size_t pixelBudget = std::clamp<std::size_t>(
+            static_cast<std::size_t>(std::ceil(track.width() * devicePixelRatioF())),
+            1,
+            kMaximumFramePrimitives);
+        const auto heatmap = analysisManager_->lodView(
+            toNanoseconds(model_.viewportStart()),
+            toNanoseconds(model_.viewportEnd()),
+            pixelBudget);
+        if (!heatmap.buckets.empty()) {
+            heatmapRenderer_.paint(
+                painter,
+                track.adjusted(1.0, 1.0, -1.0, -1.0),
+                heatmap,
+                heatmapMode_,
+                combinedHeatmapWeights_);
+            paintedLodLevel = heatmap.level;
+        }
+    }
+
     if (const auto& selection = model_.selection()) {
         const qreal selectionStart = model_.timeToPixel(selection->start, track.left(), track.width());
         const qreal selectionEnd = model_.timeToPixel(selection->end, track.left(), track.width());
@@ -641,6 +738,16 @@ void TimelineWidget::paintEvent(QPaintEvent* event)
             Qt::AlignLeft | Qt::AlignVCenter,
             label);
         lastLabelRight = labelLeft + labelWidth;
+    }
+
+    if (paintedLodLevel) {
+        painter.setPen(QColor(190, 199, 212, 205));
+        painter.drawText(
+            track.adjusted(6.0, 4.0, -6.0, -4.0),
+            Qt::AlignTop | Qt::AlignRight,
+            tr("%1 heatmap  L%2")
+                .arg(heatmapModeName(heatmapMode_))
+                .arg(*paintedLodLevel));
     }
 
     const auto playhead = model_.playhead();

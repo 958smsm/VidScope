@@ -86,6 +86,30 @@ struct AnalysisTask final {
         1.0);
 }
 
+[[nodiscard]] std::size_t estimatedAnalysisSamples(
+    const media::MediaInfo& info,
+    const std::size_t maximumSamples) noexcept
+{
+    std::uint64_t estimate = 1;
+    if (info.declaredFrameCount > 0) {
+        estimate = static_cast<std::uint64_t>(info.declaredFrameCount);
+    } else {
+        media::MediaTime frameDuration = media::nominalFrameDuration(info.averageFrameRate);
+        if (frameDuration <= media::MediaTime::zero()) {
+            frameDuration = media::nominalFrameDuration(info.realFrameRate);
+        }
+        if (frameDuration <= media::MediaTime::zero()) {
+            frameDuration = std::chrono::nanoseconds(33'333'333);
+        }
+        if (info.duration > media::MediaTime::zero()) {
+            estimate = static_cast<std::uint64_t>(info.duration.count() / frameDuration.count()) + 1U;
+        }
+    }
+    return static_cast<std::size_t>(std::min<std::uint64_t>(
+        estimate,
+        static_cast<std::uint64_t>(maximumSamples)));
+}
+
 } // namespace
 
 class AnalysisManager::Impl final {
@@ -94,6 +118,7 @@ public:
         : owner_(owner)
         , config_(normalizeConfig(std::move(config)))
         , store_(config_.maximumInMemorySamples)
+        , pyramid_(config_.pyramid)
         , cache_(config_.cache)
         , worker_([this](const std::stop_token stop) { run(stop); })
     {
@@ -121,6 +146,10 @@ public:
             clearMedia();
             return;
         }
+        const auto duration = info->duration;
+        const auto estimatedSamples = estimatedAnalysisSamples(
+            *info,
+            config_.maximumInMemorySamples);
         std::uint64_t epoch = 0;
         {
             std::lock_guard lock(mutex_);
@@ -140,6 +169,7 @@ public:
             progress_.store(0.0, std::memory_order_release);
         }
         store_.clear();
+        pyramid_.reset(duration, estimatedSamples);
         condition_.notify_all();
         postState(AnalysisState::LoadingCache, epoch);
         postProgress(0.0, 0, epoch);
@@ -157,6 +187,7 @@ public:
             progress_.store(0.0, std::memory_order_release);
         }
         store_.clear();
+        pyramid_.clear();
         condition_.notify_all();
     }
 
@@ -232,6 +263,16 @@ public:
     }
 
     [[nodiscard]] const AnalysisStore& store() const noexcept { return store_; }
+    [[nodiscard]] AnalysisLodView lodView(
+        const qint64 start,
+        const qint64 end,
+        const std::size_t maximumBuckets) const
+    {
+        return pyramid_.view(
+            media::MediaTime(std::max<qint64>(0, start)),
+            media::MediaTime(std::max<qint64>(0, end)),
+            maximumBuckets);
+    }
     [[nodiscard]] double progress() const noexcept { return progress_.load(std::memory_order_acquire); }
     [[nodiscard]] AnalysisState state() const noexcept { return state_.load(std::memory_order_acquire); }
 
@@ -478,6 +519,7 @@ private:
             return;
         }
         store_.replace(std::move(document.samples));
+        pyramid_.rebuild(store_.snapshot());
         context.epoch = task.epoch;
         context.info = info;
         context.session = std::make_unique<playback::PlaybackSession>(config_.session);
@@ -577,6 +619,17 @@ private:
                 if (!batchStarted || batchCount == 0) {
                     return;
                 }
+                if (!acceptsEpoch(task.epoch)) {
+                    batchCount = 0;
+                    batchStarted = false;
+                    return;
+                }
+                const auto aligned = pyramid_.alignedBaseRange(batchStart, batchEnd);
+                const auto samples = store_.range(
+                    aligned.start,
+                    aligned.end,
+                    store_.capacity());
+                pyramid_.replaceRange(batchStart, batchEnd, samples);
                 postSamples(
                     static_cast<qint64>(batchStart.count()),
                     static_cast<qint64>(batchEnd.count()),
@@ -751,6 +804,7 @@ private:
     AnalysisManager* const owner_;
     AnalysisManagerConfig config_;
     AnalysisStore store_;
+    AnalysisPyramid pyramid_;
     AnalysisCache cache_;
 
     mutable std::mutex mutex_;
@@ -839,6 +893,14 @@ std::vector<AnalysisSample> AnalysisManager::samplesInRange(
     auto start = media::MediaTime(std::max<qint64>(0, startNanoseconds));
     auto end = media::MediaTime(std::max<qint64>(0, endNanoseconds));
     return impl_->store().range(start, end, maximumResults);
+}
+
+AnalysisLodView AnalysisManager::lodView(
+    const qint64 startNanoseconds,
+    const qint64 endNanoseconds,
+    const std::size_t maximumBuckets) const
+{
+    return impl_->lodView(startNanoseconds, endNanoseconds, maximumBuckets);
 }
 
 qsizetype AnalysisManager::sampleCount() const noexcept

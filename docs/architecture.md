@@ -1,9 +1,10 @@
-# VidScope Phase 0-6 architecture
+# VidScope Phase 0-7 architecture
 
 VidScope is a C++20, Qt 6.11.2, direct-FFmpeg video inspection application.
-Phase 6 adds progressive motion/similarity analysis and a persistent analysis
-cache without weakening the frame-accurate playback, timestamp, ownership,
-timeline, preview, cancellation, or thread boundaries established earlier.
+Phase 7 adds bounded hierarchical analysis aggregation and timeline heatmap
+rendering above the Phase 6 progressive motion/similarity pipeline without
+weakening the frame-accurate playback, timestamp, ownership, preview,
+cancellation, or thread boundaries established earlier.
 
 ## Dependency direction
 
@@ -13,7 +14,8 @@ MainWindow / TimelineWidget / VideoViewport / HoverPreviewPopup / FilmstripWidge
         |                |                    +-> HoverPreviewController
         |                |                                         |
         |                +-> TimelineModel <- FilmstripModel        |
-        |                    (GUI-owned state)        |              |
+        |                |   (GUI-owned state)        |              |
+        |                +-> TimelineHeatmapRenderer  |              |
         |                                      FilmstripController  |
         |                                               |            |
         +--------------------------------------- ThumbnailManager <--+
@@ -27,9 +29,10 @@ MediaSource -> Demuxer -> VideoDecoder                    |
         |                                               |
       FFmpeg <-------------------------------------------+
 
-AnalysisManager (GUI API / thread-safe sample queries)
+AnalysisManager (GUI API / thread-safe raw and LOD queries)
         |
         +-> AnalysisStore <---- HoverPreviewController / FilmstripController
+        +-> AnalysisPyramid ---> TimelineWidget
         |
         +-> one cancellable analysis worker
                 -> PlaybackSession -> LumaExtractor -> VideoAnalyzer
@@ -63,10 +66,17 @@ widget per frame.
 
 `AnalysisManager` is a separate application service. It coalesces playhead and
 visible-range requests ahead of a resumable full-video background task, owns no
-widget, and exposes raw samples through a bounded thread-safe store. Playback
-and active scrubbing suspend analysis decode. Batched GUI notifications let
-hover and filmstrip controllers query scores without queueing one event per
-analyzed frame.
+widget, and exposes raw samples through a bounded thread-safe store. A separate
+thread-safe `AnalysisPyramid` mirrors compact aggregates, not image data.
+Playback and active scrubbing suspend analysis decode. Batched GUI notifications
+let hover, filmstrip, and timeline consumers refresh without queueing one event
+per analyzed frame.
+
+`TimelineHeatmapRenderer` is stateless and receives only a bounded LOD view,
+mode, and external combination weights. Motion and similarity remain separate
+raw values. Combined mode blends motion with similarity difference and
+normalizes only the components available in a bucket; rendering does not own or
+hard-code the analysis algorithms.
 
 ## Ownership and lifetime
 
@@ -210,6 +220,14 @@ pause it. Disk checkpoints use `QSaveFile`, a schema/algorithm version, source
 path/size/modification time, stream index, per-document bounds, and global LRU
 pruning.
 
+The heatmap pyramid caps level zero at 262,144 temporal buckets by default.
+Higher levels aggregate four children, so total storage is geometrically
+bounded. Each progressive delivery rebuilds only touched base buckets and their
+ancestors. A paint query chooses the first level whose visible bucket count fits
+the device-pixel budget and copies only populated buckets, with the existing
+4,096 timeline primitive ceiling as a final guard. Multi-hour overview painting
+therefore remains proportional to viewport pixels rather than frame count.
+
 Timeline known-frame metadata defaults to a hard 100,000-entry cap and uses
 deque storage plus a presentation-index location map for efficient append,
 lookup, and endpoint eviction. At the frame cap, the model evicts the temporal
@@ -239,6 +257,11 @@ decoded run has no fabricated prior-frame score. Hover previews and filmstrip
 cells show real scores when present and retain “not analyzed” semantics for
 unknown samples.
 
-Phase 7 owns timeline heatmap modes and hierarchical LOD aggregation. Phase 8
-owns scene, duplicate, and freeze detection. Detailed inspection, audio
+Phase 7 adds progressive Motion, Similarity, and Combined timeline
+visualizations, configurable blend weights, min/max/average LOD statistics,
+bounded four-to-one hierarchy construction, pixel-density level selection,
+sparse-coverage rendering, persisted mode selection, and long-video primitive
+bounds. Unknown analysis regions remain visually empty.
+
+Phase 8 owns scene, duplicate, and freeze detection. Detailed inspection, audio
 rendering/A-V sync, and export also remain later phases.
