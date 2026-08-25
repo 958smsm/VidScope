@@ -156,10 +156,10 @@ VIDSCOPE_TEST(Phase5_filmstrip_widget_is_one_custom_surface_and_activates_cells)
 
     const QPoint secondCell = widget.itemRect(1).center().toPoint();
     QTest::mouseClick(&widget, Qt::LeftButton, Qt::NoModifier, secondCell);
-    VIDSCOPE_REQUIRE(soughtTimestamp == static_cast<qint64>((1s).count()));
+    VIDSCOPE_REQUIRE(soughtTimestamp == std::chrono::duration_cast<std::chrono::nanoseconds>(1s).count());
 
     QTest::mouseDClick(&widget, Qt::LeftButton, Qt::NoModifier, secondCell);
-    VIDSCOPE_REQUIRE(inspectedTimestamp == static_cast<qint64>((1s).count()));
+    VIDSCOPE_REQUIRE(inspectedTimestamp == std::chrono::duration_cast<std::chrono::nanoseconds>(1s).count());
     VIDSCOPE_REQUIRE(inspectedIndex == 11);
 }
 
@@ -217,7 +217,7 @@ VIDSCOPE_TEST(Phase5_new_mode_supersedes_stale_filmstrip_batch)
     TimelineWidget timeline(&owner);
     FilmstripWidget widget(&owner);
     timeline.setDuration(static_cast<qint64>(info->duration.count()));
-    timeline.setPosition(static_cast<qint64>((1s).count()));
+    timeline.setPosition(std::chrono::duration_cast<std::chrono::nanoseconds>(1s).count());
 
     ThumbnailManager manager(managerConfig(cacheDirectory.path()), &owner);
     FilmstripController controller(
@@ -233,7 +233,7 @@ VIDSCOPE_TEST(Phase5_new_mode_supersedes_stale_filmstrip_batch)
 
     controller.setMode(FilmstripMode::AroundCurrentPosition);
     controller.setCount(8);
-    controller.setPlayhead(static_cast<qint64>((1s).count()));
+    controller.setPlayhead(std::chrono::duration_cast<std::chrono::nanoseconds>(1s).count());
     controller.refreshNow();
     const quint64 latestBatch = controller.batchGeneration();
 
@@ -321,9 +321,9 @@ VIDSCOPE_TEST(Phase5_selected_range_waits_for_selection_then_refreshes_only_that
         widget.plan().status == FilmstripPlanStatus::SelectionRequired);
     VIDSCOPE_REQUIRE(widget.itemCount() == 0);
 
-    timeline.setPosition(static_cast<qint64>((300ms).count()));
+    timeline.setPosition(std::chrono::duration_cast<std::chrono::nanoseconds>(300ms).count());
     timeline.setInPointAtPlayhead();
-    timeline.setPosition(static_cast<qint64>((1'200ms).count()));
+    timeline.setPosition(std::chrono::duration_cast<std::chrono::nanoseconds>(1'200ms).count());
     timeline.setOutPointAtPlayhead();
     VIDSCOPE_REQUIRE(waitUntil([&] {
         return widget.plan().status == FilmstripPlanStatus::Ready

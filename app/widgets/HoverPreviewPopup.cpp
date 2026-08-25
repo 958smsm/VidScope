@@ -250,6 +250,17 @@ void HoverPreviewPopup::updateCursorPosition(QPoint globalCursorPosition)
     }
 }
 
+void HoverPreviewPopup::setAnalysisScores(
+    const std::optional<float> motionScore,
+    const std::optional<float> similarityScore)
+{
+    analysisLabel_->setText(
+        tr("Motion: %1 | Similarity: %2")
+            .arg(formattedScore(motionScore))
+            .arg(formattedScore(similarityScore)));
+    adjustSize();
+}
+
 void HoverPreviewPopup::dismiss()
 {
     generation_ = 0;

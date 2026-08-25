@@ -158,6 +158,24 @@ bool FilmstripWidget::setThumbnail(
     return true;
 }
 
+bool FilmstripWidget::setAnalysis(
+    const std::size_t index,
+    std::optional<float> motion,
+    std::optional<float> similarity)
+{
+    if (index >= items_.size() || !items_[index].frame) {
+        return false;
+    }
+    auto& frame = *items_[index].frame;
+    frame.motionScore = std::move(motion);
+    frame.similarityScore = std::move(similarity);
+    update(itemRect(index).toAlignedRect());
+    if (hoveredIndex_ && *hoveredIndex_ == index) {
+        updateItemToolTip(index);
+    }
+    return true;
+}
+
 bool FilmstripWidget::setFailure(const std::size_t index, QString detail)
 {
     if (index >= items_.size()) {
@@ -348,6 +366,35 @@ void FilmstripWidget::paintEvent(QPaintEvent* event)
             painter.drawRoundedRect(badgeRect, 3.0, 3.0);
             painter.setPen(QColor(236, 241, 248));
             painter.drawText(badgeRect, Qt::AlignCenter, badge);
+
+            if (item.frame->motionScore || item.frame->similarityScore) {
+                const QString analysis = QStringLiteral("M %1  S %2")
+                    .arg(item.frame->motionScore
+                            ? QStringLiteral("%1%").arg(
+                                  std::clamp(*item.frame->motionScore, 0.0F, 1.0F) * 100.0F,
+                                  0,
+                                  'f',
+                                  0)
+                            : QStringLiteral("—"))
+                    .arg(item.frame->similarityScore
+                            ? QStringLiteral("%1%").arg(
+                                  std::clamp(*item.frame->similarityScore, 0.0F, 1.0F) * 100.0F,
+                                  0,
+                                  'f',
+                                  0)
+                            : QStringLiteral("—"));
+                const QRect analysisBounds = metrics.boundingRect(analysis).adjusted(-4, -2, 4, 2);
+                QRectF analysisRect(
+                    imageArea.left() + 4.0,
+                    imageArea.bottom() - static_cast<qreal>(analysisBounds.height()) - 4.0,
+                    static_cast<qreal>(analysisBounds.width()),
+                    static_cast<qreal>(analysisBounds.height()));
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(QColor(8, 11, 15, 210));
+                painter.drawRoundedRect(analysisRect, 3.0, 3.0);
+                painter.setPen(QColor(143, 205, 255));
+                painter.drawText(analysisRect, Qt::AlignCenter, analysis);
+            }
         } else {
             painter.setPen(item.state == FilmstripItemState::Failed
                     ? QColor(224, 113, 120)
@@ -555,6 +602,23 @@ void FilmstripWidget::updateItemToolTip(const std::optional<std::size_t> index)
                     : QStringLiteral("N/A"))
             .arg(pictureTypeText(item.frame->pictureType))
             .arg(item.frame->keyFrame ? tr("yes") : tr("no"));
+        if (item.frame->motionScore || item.frame->similarityScore) {
+            text += tr("\nMotion: %1 | Similarity: %2")
+                .arg(item.frame->motionScore
+                        ? QStringLiteral("%1%").arg(
+                              std::clamp(*item.frame->motionScore, 0.0F, 1.0F) * 100.0F,
+                              0,
+                              'f',
+                              1)
+                        : tr("not analyzed"))
+                .arg(item.frame->similarityScore
+                        ? QStringLiteral("%1%").arg(
+                              std::clamp(*item.frame->similarityScore, 0.0F, 1.0F) * 100.0F,
+                              0,
+                              'f',
+                              1)
+                        : tr("not analyzed"));
+        }
     } else if (item.state == FilmstripItemState::Failed) {
         text += QStringLiteral("\n") + item.failureDetail;
     }

@@ -60,7 +60,7 @@ int main(int argc, char* argv[])
     QApplication::setOrganizationDomain(QStringLiteral("vidscope.app"));
     QApplication::setApplicationName(QStringLiteral("VidScope"));
     QApplication::setApplicationDisplayName(QStringLiteral("VidScope"));
-    QApplication::setApplicationVersion(QStringLiteral("0.5.0"));
+    QApplication::setApplicationVersion(QString::fromLatin1(VIDSCOPE_VERSION));
 
     vidscope::core::installLogging();
     vidscope::core::installFfmpegLogBridge();

@@ -9,6 +9,10 @@ class QLabel;
 class QComboBox;
 class QToolButton;
 
+namespace vidscope::analysis {
+class AnalysisManager;
+}
+
 namespace vidscope::render {
 class VideoViewport;
 }
@@ -54,6 +58,7 @@ private:
 
     bool opening_ = false;
     playback::PlaybackController* controller_ = nullptr;
+    analysis::AnalysisManager* analysisManager_ = nullptr;
     thumbnails::ThumbnailManager* thumbnailManager_ = nullptr;
     FilmstripController* filmstripController_ = nullptr;
     HoverPreviewController* hoverPreviewController_ = nullptr;
@@ -63,6 +68,7 @@ private:
     QLabel* frameStatus_ = nullptr;
     QLabel* mediaStatus_ = nullptr;
     QLabel* selectionStatus_ = nullptr;
+    QLabel* analysisStatus_ = nullptr;
     QComboBox* frameStepBox_ = nullptr;
     QComboBox* filmstripModeBox_ = nullptr;
     QComboBox* filmstripCountBox_ = nullptr;

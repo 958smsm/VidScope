@@ -36,6 +36,9 @@ public:
         const QString& detail,
         QPoint globalCursorPosition);
     void updateCursorPosition(QPoint globalCursorPosition);
+    void setAnalysisScores(
+        std::optional<float> motionScore,
+        std::optional<float> similarityScore);
     void dismiss();
 
     [[nodiscard]] thumbnails::ThumbnailGeneration generation() const noexcept;

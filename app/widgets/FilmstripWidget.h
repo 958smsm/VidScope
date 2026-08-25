@@ -39,6 +39,10 @@ public:
     void setPlan(filmstrip::FilmstripPlan plan);
     void clear(QString message = {});
     bool setThumbnail(std::size_t index, thumbnails::ThumbnailFrame frame);
+    bool setAnalysis(
+        std::size_t index,
+        std::optional<float> motion,
+        std::optional<float> similarity);
     bool setFailure(std::size_t index, QString detail);
     void setPlayhead(qint64 nanoseconds);
 

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "analysis/AnalysisManager.h"
 #include "thumbnails/ThumbnailManager.h"
 
 #include <QtCore/QObject>
@@ -33,6 +34,13 @@ public:
         QWidget* anchorWindow,
         HoverPreviewConfig config = {},
         QObject* parent = nullptr);
+    HoverPreviewController(
+        timeline::TimelineWidget* timeline,
+        thumbnails::ThumbnailManager* manager,
+        analysis::AnalysisManager* analysisManager,
+        QWidget* anchorWindow,
+        HoverPreviewConfig config = {},
+        QObject* parent = nullptr);
     ~HoverPreviewController() override;
 
     void clear();
@@ -47,9 +55,11 @@ private:
     void dispatchRequest();
     void handlePreview(const thumbnails::ThumbnailResult& result);
     void handleFailure(thumbnails::ThumbnailGeneration generation, const QString& detail);
+    void handleAnalysisSamples(qint64 startNanoseconds, qint64 endNanoseconds);
 
     timeline::TimelineWidget* const timeline_;
     thumbnails::ThumbnailManager* const manager_;
+    analysis::AnalysisManager* const analysisManager_;
     HoverPreviewPopup* const popup_;
     HoverPreviewConfig config_;
     QTimer debounceTimer_;

@@ -6,7 +6,7 @@ timestamps, B-frame reordering, VFR navigation, seek behavior, decoded-frame
 ownership, timeline coordinates, thumbnail generation, and cache policy under
 application control.
 
-The implemented milestone is Phase 0-5. It includes media opening, direct
+The implemented milestone is Phase 0-6. It includes media opening, direct
 demux/decode, optional hardware decoding with CPU fallback, bounded frame
 history and forward queues, cancellable keyframe-based seek, exact
 next/previous and signed N-frame navigation, keyframe navigation,
@@ -16,7 +16,10 @@ and filmstrip work run through one bounded priority scheduler and reusable FFmpe
 worker pool separate from playback. The latest interactive request supersedes
 stale work; filmstrip batches reject superseded deliveries, use bounded memory
 and disk caches, retry still-current cells after bounded-scheduler preemption,
-and never create one QWidget or decoder per frame.
+and never create one QWidget or decoder per frame. A separate progressive
+analysis worker decodes presentation-order frames into bounded 160x90 luma
+planes, computes raw motion and similarity scores, persists a versioned cache,
+and yields to playback and active scrubbing.
 
 ## Prerequisites
 
@@ -101,10 +104,11 @@ Filmstrip:
 Application shortcuts can be remapped through **Settings > Keyboard
 Shortcuts**.
 
-The Phase 4 hover popup exposes exact decoded timestamp, established frame index when
-known, frame type, keyframe state, and cache source. Motion and similarity are
-shown as **not analyzed** until the Phase 6 analysis pipeline supplies real
-scores; no placeholder values are fabricated.
+The hover popup exposes exact decoded timestamp, established frame index when
+known, frame type, keyframe state, cache source, and real Phase 6 motion and
+similarity scores as soon as the corresponding frame has been analyzed. The
+filmstrip uses the same raw samples and updates already-visible cells as
+analysis batches arrive; no placeholder values are fabricated.
 
 ## Documentation and scope
 
@@ -115,14 +119,15 @@ scores; no placeholder values are fabricated.
 - [Phase 3 final review](docs/phase-3-review.md)
 - [Phase 4 final review](docs/phase-4-review.md)
 - [Phase 5 final review](docs/phase-5-review.md)
+- [Phase 6 final review](docs/phase-6-review.md)
 
-Phase 5 is the completed filmstrip milestone. `FilmstripModel` computes bounded,
-testable timestamp/frame-hint plans; `FilmstripController` coordinates one
-generation-tagged batch at a time through `ThumbnailManager`; and
-`FilmstripWidget` paints all cells on one lightweight surface. Progressive
-motion/similarity analysis and heatmaps, automatic scene and duplicate/freeze
-detection, audio rendering/A-V sync, the full frame inspector, and export remain
-later phases.
+Phase 6 is the completed video-analysis milestone. `AnalysisManager` owns one
+cancellable low-priority decoder worker, `LumaExtractor` performs bounded FFmpeg
+downscaling, `VideoAnalyzer` keeps motion and similarity algorithms independently
+testable, `AnalysisStore` exposes thread-safe raw samples, and `AnalysisCache`
+persists versioned results keyed to the source file and selected stream. Phase 7
+heatmap/LOD rendering, automatic scene and duplicate/freeze detection, audio
+rendering/A-V sync, the full frame inspector, and export remain later phases.
 
 Known timeline frame boundaries and keyframe ticks still grow only from exact
 frames published by the playback engine; opening a video does not force a

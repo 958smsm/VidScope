@@ -6,8 +6,8 @@ endif()
 
 project(
     VidScope
-    VERSION 0.5.0
-    DESCRIPTION "Frame-accurate professional video inspection with asynchronous previews and filmstrips"
+    VERSION 0.6.0
+    DESCRIPTION "Frame-accurate professional video inspection with progressive video analysis"
     LANGUAGES CXX
 )
 
@@ -37,6 +37,10 @@ add_library(vidscope_engine STATIC)
 target_sources(
     vidscope_engine
     PRIVATE
+        app/analysis/AnalysisCache.cpp
+        app/analysis/AnalysisManager.cpp
+        app/analysis/AnalysisTypes.cpp
+        app/analysis/VideoAnalyzer.cpp
         app/core/Logging.cpp
         app/filmstrip/FilmstripModel.cpp
         app/media/Demuxer.cpp
@@ -57,6 +61,10 @@ target_sources(
         FILE_SET HEADERS
         BASE_DIRS app
         FILES
+            app/analysis/AnalysisCache.h
+            app/analysis/AnalysisManager.h
+            app/analysis/AnalysisTypes.h
+            app/analysis/VideoAnalyzer.h
             app/core/Cancellation.h
             app/core/Logging.h
             app/filmstrip/FilmstripModel.h
@@ -122,6 +130,7 @@ target_include_directories(vidscope_ui PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT
 
 qt_add_executable(VidScope WIN32 app/main.cpp)
 target_link_libraries(VidScope PRIVATE vidscope_ui)
+target_compile_definitions(VidScope PRIVATE VIDSCOPE_VERSION="${PROJECT_VERSION}")
 
 function(vidscope_enable_warnings target)
     if(MSVC)

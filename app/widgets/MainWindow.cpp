@@ -1,5 +1,6 @@
 #include "widgets/MainWindow.h"
 
+#include "analysis/AnalysisManager.h"
 #include "render/VideoViewport.h"
 #include "timeline/TimelineWidget.h"
 #include "thumbnails/ThumbnailManager.h"
@@ -135,17 +136,20 @@ MainWindow::MainWindow(QWidget* parent)
     createMenus();
     createShortcuts();
 
+    analysisManager_ = new analysis::AnalysisManager({}, this);
     thumbnailManager_ = new thumbnails::ThumbnailManager({}, this);
     thumbnailManager_->setObjectName(QStringLiteral("thumbnailManager"));
     filmstripController_ = new FilmstripController(
         timeline_,
         thumbnailManager_,
+        analysisManager_,
         filmstrip_,
         {},
         this);
     hoverPreviewController_ = new HoverPreviewController(
         timeline_,
         thumbnailManager_,
+        analysisManager_,
         this,
         {},
         this);
@@ -232,6 +236,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(controller_, &playback::PlaybackController::mediaClosed, this, [this] {
         hoverPreviewController_->clear();
         filmstripController_->clear();
+        analysisManager_->clearMedia();
         thumbnailManager_->clearMedia();
         viewport_->clearFrame();
         timeline_->setDuration(0);
@@ -256,6 +261,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(controller_, &playback::PlaybackController::positionChanged, this, [this](qint64 positionNs) {
         timeline_->setPosition(positionNs);
         filmstripController_->setPlayhead(positionNs);
+        analysisManager_->requestPlayhead(positionNs);
         if (auto* position = findChild<QLabel*>(QStringLiteral("positionLabel"))) {
             position->setProperty("positionNs", QVariant::fromValue(positionNs));
             const auto duration = position->property("durationNs").toLongLong();
@@ -295,7 +301,13 @@ MainWindow::MainWindow(QWidget* parent)
         });
     connect(timeline_, &timeline::TimelineWidget::seekRequested,
             controller_, &playback::PlaybackController::seekToNanoseconds);
+    connect(
+        timeline_,
+        &timeline::TimelineWidget::viewportChanged,
+        analysisManager_,
+        &analysis::AnalysisManager::requestVisibleRange);
     connect(timeline_, &timeline::TimelineWidget::scrubbingChanged, this, [this](bool active) {
+        analysisManager_->setInteractiveActivity(active);
         statusBar()->showMessage(active ? tr("Scrubbing") : stateDescription(controller_->state()));
     });
     connect(timeline_, &timeline::TimelineWidget::selectionChanged,
@@ -306,6 +318,50 @@ MainWindow::MainWindow(QWidget* parent)
                     tr("Marker at %1").arg(formatTime(time)),
                     1500);
             });
+    connect(
+        analysisManager_,
+        &analysis::AnalysisManager::progressChanged,
+        this,
+        [this](const double progress, const quint64 samples) {
+            analysisStatus_->setText(
+                tr("Analysis %1% | %2 frames")
+                    .arg(progress * 100.0, 0, 'f', 0)
+                    .arg(samples));
+        });
+    connect(
+        analysisManager_,
+        &analysis::AnalysisManager::stateChanged,
+        this,
+        [this](const analysis::AnalysisState state) {
+            switch (state) {
+            case analysis::AnalysisState::Idle:
+                analysisStatus_->setText(tr("Analysis -"));
+                break;
+            case analysis::AnalysisState::LoadingCache:
+                analysisStatus_->setText(tr("Analysis cache…"));
+                break;
+            case analysis::AnalysisState::Analyzing:
+                break;
+            case analysis::AnalysisState::Paused:
+                analysisStatus_->setText(tr("Analysis paused"));
+                break;
+            case analysis::AnalysisState::Complete:
+                analysisStatus_->setText(
+                    tr("Analysis complete | %1 frames").arg(analysisManager_->sampleCount()));
+                break;
+            case analysis::AnalysisState::Error:
+                analysisStatus_->setText(tr("Analysis error"));
+                break;
+            }
+        });
+    connect(
+        analysisManager_,
+        &analysis::AnalysisManager::errorOccurred,
+        this,
+        [this](const QString& detail) {
+            analysisStatus_->setText(tr("Analysis error"));
+            analysisStatus_->setToolTip(detail);
+        });
 
     handleState(playback::PlaybackState::Closed);
 
@@ -334,6 +390,8 @@ MainWindow::~MainWindow()
     hoverPreviewController_ = nullptr;
     delete filmstripController_;
     filmstripController_ = nullptr;
+    delete analysisManager_;
+    analysisManager_ = nullptr;
     delete thumbnailManager_;
     thumbnailManager_ = nullptr;
     delete controller_;
@@ -477,10 +535,15 @@ void MainWindow::createActions()
 
     auto* about = createAction("actionAbout", tr("&About VidScope"));
     connect(about, &QAction::triggered, this, [this] {
+        const QString applicationVersion = QApplication::applicationVersion().toHtmlEscaped();
+        const QString productName = applicationVersion.isEmpty()
+            ? tr("VidScope")
+            : tr("VidScope %1").arg(applicationVersion);
         QMessageBox::about(
             this,
             tr("About VidScope"),
-            tr("<b>VidScope</b><br>Frame-accurate video inspection built with Qt and FFmpeg."));
+            tr("<b>%1</b><br>Frame-accurate video inspection built with Qt and FFmpeg.")
+                .arg(productName));
     });
 }
 
@@ -654,6 +717,11 @@ void MainWindow::createLayout()
     selectionStatus_->setTextInteractionFlags(Qt::TextSelectableByMouse);
     inspection->addWidget(selectionStatus_, 1);
 
+    analysisStatus_ = new QLabel(tr("Analysis -"), controls);
+    analysisStatus_->setObjectName(QStringLiteral("analysisStatus"));
+    analysisStatus_->setAlignment(Qt::AlignCenter);
+    inspection->addWidget(analysisStatus_);
+
     auto* metrics = new QLabel(tr("decode - | cache 0"), controls);
     metrics->setObjectName(QStringLiteral("metricsLabel"));
     metrics->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -692,6 +760,7 @@ void MainWindow::createLayout()
         QLabel#mediaStatus { color: #c5ccd7; }
         QLabel#frameStatus { color: #b8c2d0; }
         QLabel#selectionStatus { color: #7db7e8; }
+        QLabel#analysisStatus { color: #8bc9a7; }
         QLabel#metricsLabel { color: #7f8a99; }
         QLabel#positionLabel { color: #dce7f5; }
         QLabel#filmstripTitle { color: #dce7f5; font-weight: 600; }
@@ -841,6 +910,7 @@ void MainWindow::openFile()
     // already-queued delivery is ignored until the new media lifecycle exists.
     hoverPreviewController_->clear();
     filmstripController_->clear();
+    analysisManager_->clearMedia();
     thumbnailManager_->clearMedia();
     opening_ = true;
     timeline_->setDuration(0);
@@ -858,6 +928,7 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
 
     opening_ = false;
     thumbnailManager_->setMedia(info);
+    analysisManager_->setMedia(info);
     handleState(controller_->state());
     timeline_->setDuration(static_cast<qint64>(info->duration.count()));
     filmstripController_->setMedia(info);
@@ -915,6 +986,7 @@ void MainWindow::handleState(playback::PlaybackState state)
         && state != playback::PlaybackState::Closed
         && state != playback::PlaybackState::Error;
     const bool playing = state == playback::PlaybackState::Playing;
+    analysisManager_->setPlaybackActive(playing);
 
     if (auto* playPause = actionByName(this, "actionPlayPause")) {
         playPause->setEnabled(hasMedia);

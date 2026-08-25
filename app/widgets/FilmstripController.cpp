@@ -35,9 +35,27 @@ FilmstripController::FilmstripController(
     FilmstripWidget* widget,
     FilmstripControllerConfig config,
     QObject* parent)
+    : FilmstripController(
+          timeline,
+          manager,
+          nullptr,
+          widget,
+          std::move(config),
+          parent)
+{
+}
+
+FilmstripController::FilmstripController(
+    timeline::TimelineWidget* timeline,
+    thumbnails::ThumbnailManager* manager,
+    analysis::AnalysisManager* analysisManager,
+    FilmstripWidget* widget,
+    FilmstripControllerConfig config,
+    QObject* parent)
     : QObject(parent)
     , timeline_(timeline)
     , manager_(manager)
+    , analysisManager_(analysisManager)
     , widget_(widget)
     , config_(std::move(config))
 {
@@ -108,6 +126,15 @@ FilmstripController::FilmstripController(
         &thumbnails::ThumbnailManager::previewCancelled,
         this,
         &FilmstripController::handleCancellation);
+    if (analysisManager_ != nullptr) {
+        connect(
+            analysisManager_,
+            &analysis::AnalysisManager::samplesAvailable,
+            this,
+            [this](qint64 start, qint64 end, quint64) {
+                handleAnalysisSamples(start, end);
+            });
+    }
 }
 
 FilmstripController::~FilmstripController()
@@ -274,7 +301,48 @@ void FilmstripController::handlePreview(const thumbnails::ThumbnailResult& resul
     if (delivery.batch != batchGeneration_) {
         return;
     }
-    (void)widget_->setThumbnail(delivery.itemIndex, result.frame);
+    auto frame = result.frame;
+    applyAnalysis(frame);
+    (void)widget_->setThumbnail(delivery.itemIndex, std::move(frame));
+}
+
+void FilmstripController::handleAnalysisSamples(
+    const qint64 startNanoseconds,
+    const qint64 endNanoseconds)
+{
+    if (analysisManager_ == nullptr) {
+        return;
+    }
+    const qint64 start = std::min(startNanoseconds, endNanoseconds);
+    const qint64 end = std::max(startNanoseconds, endNanoseconds);
+    for (std::size_t index = 0; index < widget_->itemCount(); ++index) {
+        const auto* item = widget_->item(index);
+        if (item == nullptr || !item->frame) {
+            continue;
+        }
+        const qint64 timestamp = static_cast<qint64>(item->frame->presentationTime.count());
+        if (timestamp < start || timestamp > end) {
+            continue;
+        }
+        if (const auto sample = analysisManager_->sampleFor(
+                timestamp,
+                item->frame->presentationIndex)) {
+            (void)widget_->setAnalysis(index, sample->motion, sample->similarity);
+        }
+    }
+}
+
+void FilmstripController::applyAnalysis(thumbnails::ThumbnailFrame& frame) const
+{
+    if (analysisManager_ == nullptr) {
+        return;
+    }
+    if (const auto sample = analysisManager_->sampleFor(
+            static_cast<qint64>(frame.presentationTime.count()),
+            frame.presentationIndex)) {
+        frame.motionScore = sample->motion;
+        frame.similarityScore = sample->similarity;
+    }
 }
 
 void FilmstripController::handleFailure(

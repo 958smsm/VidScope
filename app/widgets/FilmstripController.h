@@ -1,6 +1,7 @@
 #pragma once
 
 #include "filmstrip/FilmstripModel.h"
+#include "analysis/AnalysisManager.h"
 #include "media/MediaTypes.h"
 #include "thumbnails/ThumbnailManager.h"
 
@@ -41,6 +42,13 @@ public:
         FilmstripWidget* widget,
         FilmstripControllerConfig config = {},
         QObject* parent = nullptr);
+    FilmstripController(
+        timeline::TimelineWidget* timeline,
+        thumbnails::ThumbnailManager* manager,
+        analysis::AnalysisManager* analysisManager,
+        FilmstripWidget* widget,
+        FilmstripControllerConfig config = {},
+        QObject* parent = nullptr);
     ~FilmstripController() override;
 
     void setMedia(media::MediaInfoPtr info);
@@ -71,6 +79,8 @@ private:
     void handlePreview(const thumbnails::ThumbnailResult& result);
     void handleFailure(thumbnails::ThumbnailGeneration generation, const QString& detail);
     void handleCancellation(thumbnails::ThumbnailGeneration generation);
+    void handleAnalysisSamples(qint64 startNanoseconds, qint64 endNanoseconds);
+    void applyAnalysis(thumbnails::ThumbnailFrame& frame) const;
     void retryCancelledRequests();
     void submitTarget(std::size_t itemIndex, quint64 batch);
     [[nodiscard]] thumbnails::ThumbnailPriority requestPriority() const noexcept;
@@ -78,6 +88,7 @@ private:
 
     timeline::TimelineWidget* const timeline_;
     thumbnails::ThumbnailManager* const manager_;
+    analysis::AnalysisManager* const analysisManager_;
     FilmstripWidget* const widget_;
     FilmstripControllerConfig config_;
     filmstrip::FilmstripModel model_;
