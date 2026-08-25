@@ -6,8 +6,8 @@ endif()
 
 project(
     VidScope
-    VERSION 0.8.0
-    DESCRIPTION "Frame-accurate professional video inspection with scene and duplicate detection"
+    VERSION 0.10.0
+    DESCRIPTION "Frame-accurate professional video inspection, comparison, and export"
     LANGUAGES CXX
 )
 
@@ -44,7 +44,10 @@ target_sources(
         app/analysis/DetectionEngine.cpp
         app/analysis/VideoAnalyzer.cpp
         app/core/Logging.cpp
+        app/export/ExportTypes.cpp
+        app/export/ExportManager.cpp
         app/filmstrip/FilmstripModel.cpp
+        app/inspection/FrameComparison.cpp
         app/media/Demuxer.cpp
         app/media/FfmpegRaii.cpp
         app/media/FrameConverter.cpp
@@ -71,7 +74,10 @@ target_sources(
             app/analysis/VideoAnalyzer.h
             app/core/Cancellation.h
             app/core/Logging.h
+            app/export/ExportTypes.h
+            app/export/ExportManager.h
             app/filmstrip/FilmstripModel.h
+            app/inspection/FrameComparison.h
             app/media/Demuxer.h
             app/media/FfmpegRaii.h
             app/media/FrameConverter.h
@@ -114,6 +120,7 @@ target_sources(
         app/widgets/FilmstripController.cpp
         app/widgets/FilmstripWidget.cpp
         app/widgets/AnalysisResultsPanel.cpp
+        app/widgets/FrameInspectorPanel.cpp
         app/widgets/HoverPreviewController.cpp
         app/widgets/HoverPreviewPopup.cpp
         app/widgets/MainWindow.cpp
@@ -128,6 +135,7 @@ target_sources(
             app/widgets/FilmstripController.h
             app/widgets/FilmstripWidget.h
             app/widgets/AnalysisResultsPanel.h
+            app/widgets/FrameInspectorPanel.h
             app/widgets/HoverPreviewController.h
             app/widgets/HoverPreviewPopup.h
             app/widgets/MainWindow.h

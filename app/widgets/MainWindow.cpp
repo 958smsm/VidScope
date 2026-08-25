@@ -1,11 +1,13 @@
 #include "widgets/MainWindow.h"
 
 #include "analysis/AnalysisManager.h"
+#include "export/ExportManager.h"
 #include "render/VideoViewport.h"
 #include "timeline/TimelineWidget.h"
 #include "thumbnails/ThumbnailManager.h"
 #include "widgets/FilmstripController.h"
 #include "widgets/FilmstripWidget.h"
+#include "widgets/FrameInspectorPanel.h"
 #include "widgets/HoverPreviewController.h"
 #include "widgets/AnalysisResultsPanel.h"
 #include "widgets/ShortcutEditorDialog.h"
@@ -25,10 +27,12 @@
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
 #include <QtWidgets/QHBoxLayout>
+#include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
+#include <QtWidgets/QProgressDialog>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QStyle>
@@ -46,6 +50,9 @@ extern "C" {
 #include <cstddef>
 #include <filesystem>
 #include <limits>
+#include <optional>
+#include <utility>
+#include <vector>
 
 namespace vidscope::widgets {
 namespace {
@@ -63,6 +70,60 @@ constexpr int kMaximumFilmstripCount = static_cast<int>(
 #else
     return QString::fromStdString(path.string());
 #endif
+}
+
+[[nodiscard]] std::filesystem::path qStringToPath(const QString& value)
+{
+#ifdef Q_OS_WIN
+    return std::filesystem::path(value.toStdWString());
+#else
+    return std::filesystem::path(value.toStdString());
+#endif
+}
+
+[[nodiscard]] exporting::ImageFormat imageFormatForPath(
+    const QString& path,
+    const exporting::ImageFormat fallback = exporting::ImageFormat::Png)
+{
+    return exporting::ExportPlanner::formatFromPath(qStringToPath(path))
+        .value_or(fallback);
+}
+
+[[nodiscard]] std::optional<exporting::ImageFormat> chooseSequenceFormat(
+    QWidget* parent)
+{
+    const QStringList labels{
+        MainWindow::tr("PNG"),
+        MainWindow::tr("JPEG"),
+        MainWindow::tr("WebP"),
+        MainWindow::tr("BMP"),
+        MainWindow::tr("TIFF"),
+    };
+    bool accepted = false;
+    const QString selected = QInputDialog::getItem(
+        parent,
+        MainWindow::tr("Image Format"),
+        MainWindow::tr("Export format"),
+        labels,
+        0,
+        false,
+        &accepted);
+    if (!accepted) {
+        return std::nullopt;
+    }
+    const int index = labels.indexOf(selected);
+    switch (index) {
+    case 1:
+        return exporting::ImageFormat::Jpeg;
+    case 2:
+        return exporting::ImageFormat::WebP;
+    case 3:
+        return exporting::ImageFormat::Bmp;
+    case 4:
+        return exporting::ImageFormat::Tiff;
+    default:
+        return exporting::ImageFormat::Png;
+    }
 }
 
 [[nodiscard]] QString formatTime(qint64 nanoseconds)
@@ -140,6 +201,7 @@ MainWindow::MainWindow(QWidget* parent)
     createShortcuts();
 
     analysisManager_ = new analysis::AnalysisManager({}, this);
+    exportManager_ = new exporting::ExportManager(this);
     timeline_->setAnalysisManager(analysisManager_);
     thumbnailManager_ = new thumbnails::ThumbnailManager({}, this);
     thumbnailManager_->setObjectName(QStringLiteral("thumbnailManager"));
@@ -204,11 +266,13 @@ MainWindow::MainWindow(QWidget* parent)
         [this](const qint64 timestamp, const qint64 presentationIndex) {
             controller_->pause();
             controller_->seekToNanoseconds(timestamp);
+            frameInspectorDock_->show();
+            frameInspectorDock_->raise();
             statusBar()->showMessage(
                 presentationIndex >= 0
-                    ? tr("Frame %1 selected for inspection (full inspector arrives in Phase 9).")
+                    ? tr("Opening frame %1 in the Frame Inspector.")
                           .arg(presentationIndex)
-                    : tr("Frame selected for inspection (full inspector arrives in Phase 9)."),
+                    : tr("Opening the selected frame in the Frame Inspector."),
                 4000);
         });
 
@@ -265,9 +329,13 @@ MainWindow::MainWindow(QWidget* parent)
     connect(controller_, &playback::PlaybackController::mediaClosed, this, [this] {
         hoverPreviewController_->clear();
         filmstripController_->clear();
+        exportManager_->clearMedia();
         analysisManager_->clearMedia();
         thumbnailManager_->clearMedia();
         viewport_->clearFrame();
+        frameInspector_->clear();
+        currentFrame_.reset();
+        mediaInfo_.reset();
         timeline_->setDuration(0);
         mediaStatus_->setText(tr("No media loaded"));
         frameStatus_->setText(tr("Frame -"));
@@ -349,6 +417,24 @@ MainWindow::MainWindow(QWidget* parent)
             });
     connect(
         analysisManager_,
+        &analysis::AnalysisManager::samplesAvailable,
+        this,
+        [this](qint64 start, qint64 end, quint64) {
+            updateExportActions();
+            if (!currentFrame_) {
+                return;
+            }
+            const qint64 time = static_cast<qint64>(
+                currentFrame_->presentationTime.count());
+            if (time < start || time > end) {
+                return;
+            }
+            frameInspector_->setAnalysis(analysisManager_->sampleFor(
+                time,
+                currentFrame_->id.presentationIndex));
+        });
+    connect(
+        analysisManager_,
         &analysis::AnalysisManager::detectionsChanged,
         this,
         [this](quint64 scenes, quint64 duplicates, quint64 freezes, quint64 samples) {
@@ -360,6 +446,53 @@ MainWindow::MainWindow(QWidget* parent)
                     .arg(duplicates)
                     .arg(freezes));
         });
+    connect(
+        frameInspector_,
+        &FrameInspectorPanel::previousFrameRequested,
+        controller_,
+        &playback::PlaybackController::previousFrame);
+    connect(
+        frameInspector_,
+        &FrameInspectorPanel::nextFrameRequested,
+        controller_,
+        &playback::PlaybackController::nextFrame);
+    connect(
+        frameInspector_,
+        &FrameInspectorPanel::imageZoomChanged,
+        viewport_,
+        &render::VideoViewport::setImageZoom);
+    connect(
+        frameInspector_,
+        &FrameInspectorPanel::pixelInspectionChanged,
+        viewport_,
+        &render::VideoViewport::setPixelInspectionEnabled);
+    connect(
+        viewport_,
+        &render::VideoViewport::pixelInspected,
+        frameInspector_,
+        &FrameInspectorPanel::updatePixel);
+    connect(
+        viewport_,
+        &render::VideoViewport::pixelInspectionLeft,
+        frameInspector_,
+        &FrameInspectorPanel::clearPixel);
+    connect(
+        frameInspector_,
+        &FrameInspectorPanel::comparisonDisplayChanged,
+        this,
+        [this](
+            const QImage& frameA,
+            const QImage& frameB,
+            const inspection::ComparisonMode mode,
+            const QImage& visualization,
+            const QString& detail) {
+            viewport_->setComparison(frameA, frameB, mode, visualization, detail);
+        });
+    connect(
+        frameInspector_,
+        &FrameInspectorPanel::comparisonCleared,
+        viewport_,
+        &render::VideoViewport::clearComparison);
     connect(
         analysisResults_,
         &AnalysisResultsPanel::seekRequested,
@@ -414,6 +547,41 @@ MainWindow::MainWindow(QWidget* parent)
             analysisStatus_->setText(tr("Analysis error"));
             analysisStatus_->setToolTip(detail);
         });
+    connect(
+        exportManager_,
+        &exporting::ExportManager::progressChanged,
+        this,
+        [this](
+            quint64,
+            const quint64 completed,
+            const quint64 total,
+            const QString& detail) {
+            if (exportProgress_ == nullptr) {
+                return;
+            }
+            exportProgress_->setLabelText(detail);
+            if (total == 0) {
+                exportProgress_->setRange(0, 0);
+                return;
+            }
+            const int maximum = static_cast<int>(std::min<quint64>(
+                std::numeric_limits<int>::max(),
+                std::max(total, completed)));
+            exportProgress_->setRange(0, maximum);
+            exportProgress_->setValue(static_cast<int>(std::min<quint64>(
+                static_cast<quint64>(maximum),
+                completed)));
+        });
+    connect(
+        exportManager_,
+        &exporting::ExportManager::exportFinished,
+        this,
+        &MainWindow::finishExport);
+    connect(
+        exportManager_,
+        &exporting::ExportManager::stateChanged,
+        this,
+        [this](exporting::ExportState) { updateExportActions(); });
 
     handleState(playback::PlaybackState::Closed);
 
@@ -443,6 +611,14 @@ MainWindow::~MainWindow()
     }
 
     // Join all decode workers while their GUI receivers are still alive.
+    if (exportManager_ != nullptr) {
+        exportManager_->clearMedia();
+    }
+    if (frameInspector_ != nullptr) {
+        frameInspector_->clear();
+    }
+    delete exportManager_;
+    exportManager_ = nullptr;
     delete hoverPreviewController_;
     hoverPreviewController_ = nullptr;
     delete filmstripController_;
@@ -575,6 +751,91 @@ void MainWindow::createActions()
     connect(refreshFilmstrip, &QAction::triggered, this, [this] {
         if (filmstripController_ != nullptr) {
             filmstripController_->refreshNow();
+        }
+    });
+
+    auto* setFrameA = createAction("actionSetFrameA", tr("Set Frame &A"));
+    connect(setFrameA, &QAction::triggered, this, [this] {
+        if (frameInspector_ != nullptr) {
+            frameInspector_->setCurrentAsFrameA();
+        }
+    });
+    auto* setFrameB = createAction("actionSetFrameB", tr("Set Frame &B"));
+    connect(setFrameB, &QAction::triggered, this, [this] {
+        if (frameInspector_ != nullptr) {
+            frameInspector_->setCurrentAsFrameB();
+        }
+    });
+    auto* clearComparison =
+        createAction("actionClearFrameComparison", tr("&Clear A/B Comparison"));
+    connect(clearComparison, &QAction::triggered, this, [this] {
+        if (frameInspector_ != nullptr) {
+            frameInspector_->clearComparison();
+        }
+    });
+
+    auto* exportCurrent =
+        createAction("actionExportCurrentFrame", tr("Save &Current Frame..."));
+    connect(exportCurrent, &QAction::triggered, this, [this] {
+        exportSingleFrame(exporting::RelativeFrame::Current);
+    });
+    auto* exportPrevious =
+        createAction("actionExportPreviousFrame", tr("Save &Previous Frame..."));
+    connect(exportPrevious, &QAction::triggered, this, [this] {
+        exportSingleFrame(exporting::RelativeFrame::Previous);
+    });
+    auto* exportNext =
+        createAction("actionExportNextFrame", tr("Save &Next Frame..."));
+    connect(exportNext, &QAction::triggered, this, [this] {
+        exportSingleFrame(exporting::RelativeFrame::Next);
+    });
+    auto* exportSelected =
+        createAction("actionExportSelectedFrames", tr("Export &Selected Frames..."));
+    connect(
+        exportSelected,
+        &QAction::triggered,
+        this,
+        &MainWindow::exportSelectedFrames);
+    auto* exportEveryN =
+        createAction("actionExportEveryNFrames", tr("Export Every &N Frames..."));
+    connect(
+        exportEveryN,
+        &QAction::triggered,
+        this,
+        &MainWindow::exportEveryNFrames);
+    auto* exportKeyframes =
+        createAction("actionExportKeyframes", tr("Export &Keyframes..."));
+    connect(
+        exportKeyframes,
+        &QAction::triggered,
+        this,
+        &MainWindow::exportKeyframes);
+    auto* exportScenes =
+        createAction("actionExportSceneFrames", tr("Export Scene &Frames..."));
+    connect(
+        exportScenes,
+        &QAction::triggered,
+        this,
+        &MainWindow::exportSceneFrames);
+    auto* exportHighMotion =
+        createAction("actionExportHighMotionFrames", tr("Export &High-Motion Frames..."));
+    connect(
+        exportHighMotion,
+        &QAction::triggered,
+        this,
+        &MainWindow::exportHighMotionFrames);
+    auto* contactSheet =
+        createAction("actionCreateContactSheet", tr("Create Contact &Sheet..."));
+    connect(
+        contactSheet,
+        &QAction::triggered,
+        this,
+        &MainWindow::createContactSheet);
+    auto* cancelExport =
+        createAction("actionCancelExport", tr("Cancel E&xport"));
+    connect(cancelExport, &QAction::triggered, this, [this] {
+        if (exportManager_ != nullptr) {
+            exportManager_->cancel();
         }
     });
 
@@ -828,6 +1089,16 @@ void MainWindow::createLayout()
     analysisResultsDock_->setWidget(analysisResults_);
     addDockWidget(Qt::RightDockWidgetArea, analysisResultsDock_);
 
+    frameInspectorDock_ = new QDockWidget(tr("Frame Inspector"), this);
+    frameInspectorDock_->setObjectName(QStringLiteral("frameInspectorDock"));
+    frameInspectorDock_->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    frameInspectorDock_->setMinimumWidth(380);
+    frameInspector_ = new FrameInspectorPanel(frameInspectorDock_);
+    frameInspectorDock_->setWidget(frameInspector_);
+    addDockWidget(Qt::RightDockWidgetArea, frameInspectorDock_);
+    tabifyDockWidget(analysisResultsDock_, frameInspectorDock_);
+    frameInspectorDock_->raise();
+
     statusBar()->setSizeGripEnabled(true);
     statusBar()->showMessage(tr("Ready"));
 
@@ -894,6 +1165,21 @@ void MainWindow::createMenus()
     fileMenu->addSeparator();
     fileMenu->addAction(actionByName(this, "actionExit"));
 
+    auto* exportMenu = menuBar()->addMenu(tr("&Export"));
+    exportMenu->addAction(actionByName(this, "actionExportCurrentFrame"));
+    exportMenu->addAction(actionByName(this, "actionExportPreviousFrame"));
+    exportMenu->addAction(actionByName(this, "actionExportNextFrame"));
+    exportMenu->addSeparator();
+    exportMenu->addAction(actionByName(this, "actionExportSelectedFrames"));
+    exportMenu->addAction(actionByName(this, "actionExportEveryNFrames"));
+    exportMenu->addAction(actionByName(this, "actionExportKeyframes"));
+    exportMenu->addAction(actionByName(this, "actionExportSceneFrames"));
+    exportMenu->addAction(actionByName(this, "actionExportHighMotionFrames"));
+    exportMenu->addSeparator();
+    exportMenu->addAction(actionByName(this, "actionCreateContactSheet"));
+    exportMenu->addSeparator();
+    exportMenu->addAction(actionByName(this, "actionCancelExport"));
+
     auto* playbackMenu = menuBar()->addMenu(tr("&Playback"));
     playbackMenu->addAction(actionByName(this, "actionPlayPause"));
     playbackMenu->addAction(actionByName(this, "actionPause"));
@@ -929,9 +1215,18 @@ void MainWindow::createMenus()
     analysisMenu->addAction(actionByName(this, "actionHeatmapSceneChange"));
     analysisMenu->addAction(actionByName(this, "actionHeatmapCombined"));
 
+    auto* inspectionMenu = menuBar()->addMenu(tr("&Inspection"));
+    inspectionMenu->addAction(actionByName(this, "actionSetFrameA"));
+    inspectionMenu->addAction(actionByName(this, "actionSetFrameB"));
+    inspectionMenu->addAction(actionByName(this, "actionClearFrameComparison"));
+    inspectionMenu->addSeparator();
+    inspectionMenu->addAction(actionByName(this, "actionPreviousFrame"));
+    inspectionMenu->addAction(actionByName(this, "actionNextFrame"));
+
     auto* viewMenu = menuBar()->addMenu(tr("&View"));
     viewMenu->addAction(actionByName(this, "actionFullscreen"));
     viewMenu->addAction(analysisResultsDock_->toggleViewAction());
+    viewMenu->addAction(frameInspectorDock_->toggleViewAction());
 
     auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
     settingsMenu->addAction(actionByName(this, "actionKeyboardShortcuts"));
@@ -981,6 +1276,14 @@ void MainWindow::createShortcuts()
     configure("actionTimelineShowAll", {
         QKeySequence(QKeyCombination(Qt::ControlModifier, Qt::Key_0))});
     configure("actionFullscreen", {QKeySequence(Qt::Key_F11)});
+    configure("actionSetFrameA", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_A))});
+    configure("actionSetFrameB", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_B))});
+    configure("actionExportCurrentFrame", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_S))});
+    configure("actionCreateContactSheet", {
+        QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::AltModifier, Qt::Key_C))});
 }
 
 int MainWindow::frameStepCount() const
@@ -1014,8 +1317,12 @@ void MainWindow::openFile()
     // already-queued delivery is ignored until the new media lifecycle exists.
     hoverPreviewController_->clear();
     filmstripController_->clear();
+    exportManager_->clearMedia();
     analysisManager_->clearMedia();
     thumbnailManager_->clearMedia();
+    frameInspector_->clear();
+    currentFrame_.reset();
+    mediaInfo_.reset();
     opening_ = true;
     timeline_->setDuration(0);
     updateSelectionStatus();
@@ -1031,6 +1338,8 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
     }
 
     opening_ = false;
+    mediaInfo_ = info;
+    exportManager_->setMedia(info);
     thumbnailManager_->setMedia(info);
     analysisManager_->setMedia(info);
     handleState(controller_->state());
@@ -1079,9 +1388,17 @@ void MainWindow::handleFrame(media::DecodedFramePtr frame, const QImage& image)
     filmstripController_->setPlayhead(
         static_cast<qint64>(frame->presentationTime.count()));
     filmstripController_->notifyFrameObserved();
+    currentFrame_ = frame;
     viewport_->setFrame(image);
+    frameInspector_->setFrame(
+        frame,
+        image,
+        analysisManager_->sampleFor(
+            static_cast<qint64>(frame->presentationTime.count()),
+            frame->id.presentationIndex));
     updateFrameStatus(*frame);
     updateSelectionStatus();
+    updateExportActions();
 }
 
 void MainWindow::handleState(playback::PlaybackState state)
@@ -1117,7 +1434,10 @@ void MainWindow::handleState(playback::PlaybackState state)
              "actionSetOut",
              "actionClearSelection",
              "actionAddMarker",
-             "actionRefreshFilmstrip"}) {
+             "actionRefreshFilmstrip",
+             "actionSetFrameA",
+             "actionSetFrameB",
+             "actionClearFrameComparison"}) {
         if (auto* action = actionByName(this, name)) {
             action->setEnabled(hasMedia);
         }
@@ -1126,7 +1446,570 @@ void MainWindow::handleState(playback::PlaybackState state)
     filmstripModeBox_->setEnabled(hasMedia);
     filmstripCountBox_->setEnabled(hasMedia);
     analysisResults_->setEnabled(hasMedia);
+    frameInspector_->setEnabled(hasMedia);
+    frameInspector_->setPaused(hasMedia && !playing);
     statusBar()->showMessage(stateDescription(state));
+    updateExportActions();
+}
+
+void MainWindow::exportSingleFrame(const exporting::RelativeFrame relativeFrame)
+{
+    if (!mediaInfo_ || !currentFrame_) {
+        return;
+    }
+    QSettings settings;
+    const QString directory = settings.value(
+        QStringLiteral("export/lastDirectory"),
+        QDir::homePath()).toString();
+    const QString stem = exporting::ExportPlanner::sanitizedBaseName(
+        pathToQString(mediaInfo_->path.stem()));
+    QString qualifier;
+    switch (relativeFrame) {
+    case exporting::RelativeFrame::Previous:
+        qualifier = QStringLiteral("_previous");
+        break;
+    case exporting::RelativeFrame::Current:
+        qualifier = QStringLiteral("_current");
+        break;
+    case exporting::RelativeFrame::Next:
+        qualifier = QStringLiteral("_next");
+        break;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this,
+        tr("Save Full-Resolution Frame"),
+        QDir(directory).filePath(stem + qualifier + QStringLiteral(".png")),
+        exporting::ExportPlanner::fileDialogFilter());
+    if (path.isEmpty()) {
+        return;
+    }
+    settings.setValue(
+        QStringLiteral("export/lastDirectory"),
+        QFileInfo(path).absolutePath());
+
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::SingleFrame;
+    request.relativeFrame = relativeFrame;
+    request.anchor = currentFrame_->presentationTime;
+    request.outputPath = qStringToPath(path);
+    request.format = imageFormatForPath(path);
+    request.overwrite = true;
+    startExport(std::move(request));
+}
+
+void MainWindow::exportSelectedFrames()
+{
+    if (!mediaInfo_ || !timeline_->model().selection()) {
+        statusBar()->showMessage(tr("Select a timeline range before exporting frames."), 3500);
+        return;
+    }
+    const auto format = chooseSequenceFormat(this);
+    if (!format) {
+        return;
+    }
+    QSettings settings;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this,
+        tr("Export Selected Frames"),
+        settings.value(
+            QStringLiteral("export/lastDirectory"),
+            QDir::homePath()).toString());
+    if (directory.isEmpty()) {
+        return;
+    }
+    settings.setValue(QStringLiteral("export/lastDirectory"), directory);
+    const auto selection = *timeline_->model().selection();
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::FrameRange;
+    request.outputPath = qStringToPath(directory);
+    request.baseName = pathToQString(mediaInfo_->path.stem());
+    request.format = *format;
+    request.rangeStart = selection.start;
+    request.rangeEnd = selection.end;
+    startExport(std::move(request));
+}
+
+void MainWindow::exportEveryNFrames()
+{
+    if (!mediaInfo_) {
+        return;
+    }
+    bool accepted = false;
+    const int everyN = QInputDialog::getInt(
+        this,
+        tr("Export Every N Frames"),
+        tr("Export one frame for every N decoded presentation frames"),
+        10,
+        1,
+        1'000'000,
+        1,
+        &accepted);
+    if (!accepted) {
+        return;
+    }
+    const auto format = chooseSequenceFormat(this);
+    if (!format) {
+        return;
+    }
+    QSettings settings;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this,
+        tr("Export Every N Frames"),
+        settings.value(
+            QStringLiteral("export/lastDirectory"),
+            QDir::homePath()).toString());
+    if (directory.isEmpty()) {
+        return;
+    }
+    settings.setValue(QStringLiteral("export/lastDirectory"), directory);
+
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::FrameRange;
+    request.outputPath = qStringToPath(directory);
+    request.baseName = pathToQString(mediaInfo_->path.stem());
+    request.format = *format;
+    request.everyNFrames = static_cast<std::size_t>(everyN);
+    request.rangeStart = media::MediaTime::zero();
+    request.rangeEnd = mediaInfo_->duration;
+    if (const auto& selection = timeline_->model().selection()) {
+        request.rangeStart = selection->start;
+        request.rangeEnd = selection->end;
+    }
+    startExport(std::move(request));
+}
+
+void MainWindow::exportKeyframes()
+{
+    if (!mediaInfo_) {
+        return;
+    }
+    const auto format = chooseSequenceFormat(this);
+    if (!format) {
+        return;
+    }
+    QSettings settings;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this,
+        tr("Export Keyframes"),
+        settings.value(
+            QStringLiteral("export/lastDirectory"),
+            QDir::homePath()).toString());
+    if (directory.isEmpty()) {
+        return;
+    }
+    settings.setValue(QStringLiteral("export/lastDirectory"), directory);
+
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::Keyframes;
+    request.outputPath = qStringToPath(directory);
+    request.baseName = pathToQString(mediaInfo_->path.stem());
+    request.format = *format;
+    request.rangeEnd = mediaInfo_->duration;
+    startExport(std::move(request));
+}
+
+void MainWindow::exportSceneFrames()
+{
+    if (!mediaInfo_ || analysisManager_ == nullptr) {
+        return;
+    }
+    const auto detections = analysisManager_->detectionResults();
+    if (detections.scenes.empty()) {
+        statusBar()->showMessage(tr("No detected scene frames are available."), 3500);
+        return;
+    }
+    const auto format = chooseSequenceFormat(this);
+    if (!format) {
+        return;
+    }
+    QSettings settings;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this,
+        tr("Export Scene Frames"),
+        settings.value(
+            QStringLiteral("export/lastDirectory"),
+            QDir::homePath()).toString());
+    if (directory.isEmpty()) {
+        return;
+    }
+    settings.setValue(QStringLiteral("export/lastDirectory"), directory);
+
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::SceneFrames;
+    request.outputPath = qStringToPath(directory);
+    request.baseName = pathToQString(mediaInfo_->path.stem()) + QStringLiteral("_scene");
+    request.format = *format;
+    request.targetTimes.reserve(detections.scenes.size());
+    for (const auto& scene : detections.scenes) {
+        request.targetTimes.push_back(scene.start);
+    }
+    startExport(std::move(request));
+}
+
+void MainWindow::exportHighMotionFrames()
+{
+    if (!mediaInfo_ || analysisManager_ == nullptr) {
+        return;
+    }
+    bool accepted = false;
+    const double thresholdPercent = QInputDialog::getDouble(
+        this,
+        tr("Export High-Motion Frames"),
+        tr("Minimum motion score (%)"),
+        70.0,
+        0.0,
+        100.0,
+        1,
+        &accepted);
+    if (!accepted) {
+        return;
+    }
+    const auto samples = analysisManager_->samplesInRange(
+        0,
+        static_cast<qint64>(mediaInfo_->duration.count()),
+        exporting::ExportPlanner::kMaximumFrameExports);
+    std::vector<media::MediaTime> targets;
+    targets.reserve(samples.size());
+    const float threshold = static_cast<float>(thresholdPercent / 100.0);
+    for (const auto& sample : samples) {
+        if (sample.motion && *sample.motion >= threshold) {
+            targets.push_back(sample.presentationTime);
+        }
+    }
+    if (targets.empty()) {
+        statusBar()->showMessage(
+            tr("No analyzed frames meet the high-motion threshold."),
+            3500);
+        return;
+    }
+    const auto format = chooseSequenceFormat(this);
+    if (!format) {
+        return;
+    }
+    QSettings settings;
+    const QString directory = QFileDialog::getExistingDirectory(
+        this,
+        tr("Export High-Motion Frames"),
+        settings.value(
+            QStringLiteral("export/lastDirectory"),
+            QDir::homePath()).toString());
+    if (directory.isEmpty()) {
+        return;
+    }
+    settings.setValue(QStringLiteral("export/lastDirectory"), directory);
+
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::HighMotionFrames;
+    request.outputPath = qStringToPath(directory);
+    request.baseName = pathToQString(mediaInfo_->path.stem()) + QStringLiteral("_motion");
+    request.format = *format;
+    request.targetTimes = std::move(targets);
+    startExport(std::move(request));
+}
+
+void MainWindow::createContactSheet()
+{
+    if (!mediaInfo_) {
+        return;
+    }
+    QStringList sourceLabels;
+    std::vector<exporting::ContactSheetSource> sources;
+    const auto addSource = [&](const QString& label, const auto source) {
+        sourceLabels.push_back(label);
+        sources.push_back(source);
+    };
+    addSource(
+        tr("Entire video"),
+        exporting::ContactSheetSource::EntireVideo);
+    addSource(
+        tr("Visible timeline"),
+        exporting::ContactSheetSource::VisibleRange);
+    if (timeline_->model().selection()) {
+        addSource(
+            tr("Selected range"),
+            exporting::ContactSheetSource::SelectedRange);
+    }
+    const auto detections = analysisManager_->detectionResults();
+    if (!detections.scenes.empty()) {
+        addSource(
+            tr("Detected scenes"),
+            exporting::ContactSheetSource::DetectedScenes);
+    }
+    bool accepted = false;
+    const QString selectedSource = QInputDialog::getItem(
+        this,
+        tr("Create Contact Sheet"),
+        tr("Frame source"),
+        sourceLabels,
+        0,
+        false,
+        &accepted);
+    if (!accepted) {
+        return;
+    }
+    const int sourceIndex = sourceLabels.indexOf(selectedSource);
+    if (sourceIndex < 0
+        || sourceIndex >= static_cast<int>(sources.size())) {
+        return;
+    }
+
+    const QStringList presets{
+        tr("8 frames"),
+        tr("16 frames"),
+        tr("20 frames"),
+        tr("25 frames"),
+        tr("Custom rows x columns"),
+    };
+    const QString preset = QInputDialog::getItem(
+        this,
+        tr("Create Contact Sheet"),
+        tr("Layout preset"),
+        presets,
+        2,
+        false,
+        &accepted);
+    if (!accepted) {
+        return;
+    }
+
+    int rows = 0;
+    int columns = 0;
+    int frameCount = 0;
+    const int presetIndex = presets.indexOf(preset);
+    if (presetIndex >= 0 && presetIndex < 4) {
+        constexpr int counts[]{8, 16, 20, 25};
+        frameCount = counts[presetIndex];
+        const QSize grid = exporting::ExportPlanner::presetGrid(frameCount);
+        columns = grid.width();
+        rows = grid.height();
+    } else {
+        rows = QInputDialog::getInt(
+            this,
+            tr("Custom Contact Sheet"),
+            tr("Rows"),
+            4,
+            1,
+            32,
+            1,
+            &accepted);
+        if (!accepted) {
+            return;
+        }
+        columns = QInputDialog::getInt(
+            this,
+            tr("Custom Contact Sheet"),
+            tr("Columns"),
+            5,
+            1,
+            32,
+            1,
+            &accepted);
+        if (!accepted) {
+            return;
+        }
+        frameCount = std::min(
+            exporting::ExportPlanner::kMaximumContactSheetCells,
+            rows * columns);
+    }
+
+    const bool includeTimestamp = QMessageBox::question(
+        this,
+        tr("Contact Sheet Labels"),
+        tr("Include timestamps below each cell?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes) == QMessageBox::Yes;
+    const bool includeFrameIndex = QMessageBox::question(
+        this,
+        tr("Contact Sheet Labels"),
+        tr("Include exact frame indices when known?"),
+        QMessageBox::Yes | QMessageBox::No,
+        QMessageBox::Yes) == QMessageBox::Yes;
+
+    QSettings settings;
+    const QString directory = settings.value(
+        QStringLiteral("export/lastDirectory"),
+        QDir::homePath()).toString();
+    const QString stem = exporting::ExportPlanner::sanitizedBaseName(
+        pathToQString(mediaInfo_->path.stem()));
+    const QString output = QFileDialog::getSaveFileName(
+        this,
+        tr("Save Contact Sheet"),
+        QDir(directory).filePath(stem + QStringLiteral("_contact_sheet.png")),
+        exporting::ExportPlanner::fileDialogFilter(false, false));
+    if (output.isEmpty()) {
+        return;
+    }
+    settings.setValue(
+        QStringLiteral("export/lastDirectory"),
+        QFileInfo(output).absolutePath());
+
+    exporting::ExportRequest request;
+    request.kind = exporting::ExportKind::ContactSheet;
+    request.outputPath = qStringToPath(output);
+    request.baseName = stem;
+    request.format = imageFormatForPath(output);
+    request.overwrite = true;
+    request.rangeStart = media::MediaTime::zero();
+    request.rangeEnd = mediaInfo_->duration;
+    request.contactSheet.source = sources[static_cast<std::size_t>(sourceIndex)];
+    request.contactSheet.rows = rows;
+    request.contactSheet.columns = columns;
+    request.contactSheet.frameCount = frameCount;
+    request.contactSheet.includeTimestamp = includeTimestamp;
+    request.contactSheet.includeFrameIndex = includeFrameIndex;
+    switch (request.contactSheet.source) {
+    case exporting::ContactSheetSource::EntireVideo:
+        break;
+    case exporting::ContactSheetSource::VisibleRange:
+        request.rangeStart = timeline_->model().viewportStart();
+        request.rangeEnd = timeline_->model().viewportEnd();
+        break;
+    case exporting::ContactSheetSource::SelectedRange: {
+        const auto& selection = timeline_->model().selection();
+        if (!selection) {
+            return;
+        }
+        request.rangeStart = selection->start;
+        request.rangeEnd = selection->end;
+        break;
+    }
+    case exporting::ContactSheetSource::DetectedScenes:
+        request.targetTimes.reserve(detections.scenes.size());
+        for (const auto& scene : detections.scenes) {
+            request.targetTimes.push_back(scene.start);
+        }
+        break;
+    }
+    startExport(std::move(request));
+}
+
+void MainWindow::startExport(exporting::ExportRequest request)
+{
+    if (exportManager_ == nullptr || !mediaInfo_) {
+        return;
+    }
+    if (exportManager_->isBusy()) {
+        QMessageBox::warning(
+            this,
+            tr("Export In Progress"),
+            tr("Cancel or wait for the current export before starting another."));
+        return;
+    }
+    if (request.baseName.isEmpty()) {
+        request.baseName = pathToQString(mediaInfo_->path.stem());
+    }
+    controller_->pause();
+    if (!exportManager_->startExport(std::move(request))) {
+        QMessageBox::warning(
+            this,
+            tr("Could Not Start Export"),
+            tr("The export worker is not ready for a new request."));
+        return;
+    }
+
+    if (exportProgress_ != nullptr) {
+        exportProgress_->close();
+        exportProgress_->deleteLater();
+    }
+    exportProgress_ = new QProgressDialog(
+        tr("Preparing full-resolution export..."),
+        tr("Cancel"),
+        0,
+        0,
+        this);
+    exportProgress_->setObjectName(QStringLiteral("exportProgressDialog"));
+    exportProgress_->setWindowTitle(tr("VidScope Export"));
+    exportProgress_->setWindowModality(Qt::NonModal);
+    exportProgress_->setAutoClose(false);
+    exportProgress_->setAutoReset(false);
+    exportProgress_->setMinimumDuration(0);
+    connect(
+        exportProgress_,
+        &QProgressDialog::canceled,
+        exportManager_,
+        &exporting::ExportManager::cancel);
+    exportProgress_->show();
+    statusBar()->showMessage(tr("Export started"));
+    updateExportActions();
+}
+
+void MainWindow::finishExport(const exporting::ExportSummary& summary)
+{
+    if (exportProgress_ != nullptr) {
+        exportProgress_->close();
+        exportProgress_->deleteLater();
+        exportProgress_ = nullptr;
+    }
+    switch (summary.state) {
+    case exporting::ExportState::Completed:
+        statusBar()->showMessage(
+            tr("Export complete: %1 file(s), %2 decoded frame(s)")
+                .arg(summary.filesWritten)
+                .arg(summary.framesDecoded),
+            8000);
+        break;
+    case exporting::ExportState::Cancelled:
+        statusBar()->showMessage(tr("Export cancelled"), 4000);
+        break;
+    case exporting::ExportState::Failed:
+        statusBar()->showMessage(tr("Export failed"), 5000);
+        QMessageBox::critical(
+            this,
+            tr("Export Failed"),
+            summary.detail.isEmpty()
+                ? tr("The export could not be completed.")
+                : summary.detail);
+        break;
+    case exporting::ExportState::Idle:
+    case exporting::ExportState::Running:
+    case exporting::ExportState::Cancelling:
+        break;
+    }
+    updateExportActions();
+}
+
+void MainWindow::updateExportActions()
+{
+    const bool hasMedia = mediaInfo_ != nullptr && !opening_;
+    const bool busy = exportManager_ != nullptr && exportManager_->isBusy();
+    const bool ready = hasMedia && !busy;
+    const bool hasCurrent = ready && currentFrame_ != nullptr;
+    const bool hasSelection =
+        ready && timeline_ != nullptr && timeline_->model().selection().has_value();
+    const bool hasScenes =
+        ready && analysisManager_ != nullptr
+        && !analysisManager_->detectionResults().scenes.empty();
+    const bool hasAnalysis =
+        ready && analysisManager_ != nullptr && analysisManager_->sampleCount() > 0;
+
+    for (const char* name : {
+             "actionExportCurrentFrame",
+             "actionExportPreviousFrame",
+             "actionExportNextFrame"}) {
+        if (auto* action = actionByName(this, name)) {
+            action->setEnabled(hasCurrent);
+        }
+    }
+    for (const char* name : {
+             "actionExportEveryNFrames",
+             "actionExportKeyframes",
+             "actionCreateContactSheet"}) {
+        if (auto* action = actionByName(this, name)) {
+            action->setEnabled(ready);
+        }
+    }
+    if (auto* action = actionByName(this, "actionExportSelectedFrames")) {
+        action->setEnabled(hasSelection);
+    }
+    if (auto* action = actionByName(this, "actionExportSceneFrames")) {
+        action->setEnabled(hasScenes);
+    }
+    if (auto* action = actionByName(this, "actionExportHighMotionFrames")) {
+        action->setEnabled(hasAnalysis);
+    }
+    if (auto* action = actionByName(this, "actionCancelExport")) {
+        action->setEnabled(busy);
+    }
 }
 
 void MainWindow::showPlaybackError(const QString& title, const QString& detail)
@@ -1208,6 +2091,7 @@ void MainWindow::updateSelectionStatus()
             selectionStatus_->setText(tr("Selection -"));
             selectionStatus_->setToolTip({});
         }
+        updateExportActions();
         return;
     }
 
@@ -1235,6 +2119,7 @@ void MainWindow::updateSelectionStatus()
             .arg(formatTime(static_cast<qint64>(details.range.start.count())))
             .arg(formatTime(static_cast<qint64>(details.range.end.count())))
             .arg(count));
+    updateExportActions();
 }
 
 void MainWindow::applyDetectionResults()
@@ -1259,6 +2144,7 @@ void MainWindow::applyDetectionResults()
             break;
         }
     }
+    updateExportActions();
 }
 
 void MainWindow::seekAdjacentScene(const bool forward)

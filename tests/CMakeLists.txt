@@ -2,6 +2,8 @@ add_executable(
     vidscope_unit_tests
     TestHarness.h
     unit/AnalysisTests.cpp
+    unit/ExportTests.cpp
+    unit/FrameComparisonTests.cpp
     unit/TestMain.cpp
     unit/FilmstripModelTests.cpp
     unit/FrameCacheTests.cpp
@@ -20,7 +22,7 @@ add_test(NAME vidscope.unit COMMAND vidscope_unit_tests)
 set_tests_properties(
     vidscope.unit
     PROPERTIES
-        LABELS "phase1;phase2;phase3;phase4;phase5;phase6;phase7;phase8;unit"
+        LABELS "phase1;phase2;phase3;phase4;phase5;phase6;phase7;phase8;phase9;phase10;unit"
         TIMEOUT 120
 )
 
@@ -216,6 +218,42 @@ target_link_libraries(
         Qt6::Test
 )
 vidscope_enable_warnings(vidscope_phase8_detection_tests)
+
+add_executable(
+    vidscope_phase9_inspection_tests
+    TestHarness.h
+    integration/Phase9InspectionTests.cpp
+)
+target_include_directories(
+    vidscope_phase9_inspection_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(
+    vidscope_phase9_inspection_tests
+    PRIVATE
+        vidscope_ui
+        Qt6::Test
+)
+vidscope_enable_warnings(vidscope_phase9_inspection_tests)
+
+add_executable(
+    vidscope_phase10_export_tests
+    TestHarness.h
+    integration/Phase10ExportTests.cpp
+)
+target_include_directories(
+    vidscope_phase10_export_tests
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+)
+target_link_libraries(
+    vidscope_phase10_export_tests
+    PRIVATE
+        vidscope_ui
+        Qt6::Test
+)
+vidscope_enable_warnings(vidscope_phase10_export_tests)
 
 function(vidscope_configure_test_runtime test_name)
     if(NOT WIN32)
@@ -452,6 +490,36 @@ if(FFmpeg_EXECUTABLE)
     vidscope_configure_test_runtime(vidscope.phase8_detection)
 
     add_test(
+        NAME vidscope.phase9_inspection
+        COMMAND vidscope_phase9_inspection_tests ${_vidscope_fixture_dir}
+    )
+    set_tests_properties(
+        vidscope.phase9_inspection
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase9;media;ui;inspection;comparison"
+            RESOURCE_LOCK VidScopeGuiMedia
+            TIMEOUT 180
+    )
+    vidscope_configure_offscreen_test(vidscope.phase9_inspection)
+    vidscope_configure_test_runtime(vidscope.phase9_inspection)
+
+    add_test(
+        NAME vidscope.phase10_export
+        COMMAND vidscope_phase10_export_tests ${_vidscope_fixture_dir}
+    )
+    set_tests_properties(
+        vidscope.phase10_export
+        PROPERTIES
+            FIXTURES_REQUIRED VidScopeMedia
+            LABELS "phase10;media;ui;export"
+            RESOURCE_LOCK VidScopeGuiMedia
+            TIMEOUT 180
+    )
+    vidscope_configure_offscreen_test(vidscope.phase10_export)
+    vidscope_configure_test_runtime(vidscope.phase10_export)
+
+    add_test(
         NAME vidscope.ui_media_smoke
         COMMAND VidScope --media-smoke-test "${_vidscope_fixture_dir}/cfr_bframes.mp4"
     )
@@ -459,7 +527,7 @@ if(FFmpeg_EXECUTABLE)
         vidscope.ui_media_smoke
         PROPERTIES
             FIXTURES_REQUIRED VidScopeMedia
-            LABELS "phase1;phase2;phase3;phase4;phase5;phase6;phase7;phase8;ui"
+            LABELS "phase1;phase2;phase3;phase4;phase5;phase6;phase7;phase8;phase9;phase10;ui"
             RESOURCE_LOCK VidScopeGuiMedia
             TIMEOUT 45
     )
@@ -473,7 +541,7 @@ add_test(NAME vidscope.ui_smoke COMMAND VidScope --smoke-test)
 set_tests_properties(
     vidscope.ui_smoke
     PROPERTIES
-        LABELS "phase1;phase3;phase4;phase5;phase6;phase7;phase8;ui"
+        LABELS "phase1;phase3;phase4;phase5;phase6;phase7;phase8;phase9;phase10;ui"
         TIMEOUT 30
 )
 vidscope_configure_offscreen_test(vidscope.ui_smoke)

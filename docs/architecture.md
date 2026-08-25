@@ -1,8 +1,9 @@
-# VidScope Phase 0-8 architecture
+# VidScope Phase 0-10 architecture
 
 VidScope is a C++20, Qt 6.11.2, direct-FFmpeg video inspection application.
-Phase 8 adds bounded scene, duplicate, repeated-section, and freeze detection
-above the progressive analysis and heatmap pipeline without
+Phase 10 adds full-resolution frame/range export and bounded contact-sheet
+generation above the playback, analysis, detection, and inspection pipeline
+without
 weakening the frame-accurate playback, timestamp, ownership, preview,
 cancellation, or thread boundaries established earlier.
 
@@ -39,6 +40,22 @@ AnalysisManager (GUI API / thread-safe raw and LOD queries)
         +-> one cancellable analysis worker
                 -> PlaybackSession -> LumaExtractor -> VideoAnalyzer
                 -> versioned AnalysisCache
+
+FrameInspectorPanel <---- current DecodedFrame + current display QImage
+        |                           |
+        +-> VideoViewport ----------+-> O(1) paused pixel lookup
+        |
+        +-> FrameComparisonManager -> one coalescing worker
+                                      -> FrameComparison
+                                      -> SSIM / PSNR / difference image
+
+MainWindow -> ExportManager -> one cancellable export worker
+                |               -> PlaybackSession (software decode)
+                |               -> FrameConverter (source resolution)
+                |               -> QSaveFile + QImageWriter
+                |
+                +-> ExportPlanner <- Timeline / Detection / Analysis targets
+                                    -> bounded contact-sheet QImage + QPainter
 ```
 
 `TimelineWidget` never calls FFmpeg. It owns a `TimelineModel`, turns pointer
@@ -87,6 +104,21 @@ raw values. Combined mode blends motion with similarity difference and
 normalizes only the components available in a bucket; rendering does not own or
 hard-code the analysis algorithms.
 
+`FrameInspectorPanel` retains only the current display frame and the two
+explicitly captured A/B frames. It presents immutable decoded metadata plus the
+current analysis sample on the GUI thread. `VideoViewport` owns display-only
+zoom, pointer-to-image mapping, and the inexpensive side-by-side/overlay/wipe/
+blink compositions. `FrameComparisonManager` coalesces requests on one worker,
+cancels stale computation, and queues only the newest SSIM/PSNR or derived-image
+result back to the GUI thread.
+
+`ExportManager` accepts at most one pending or active request. Its worker
+owns a thread-confined software `PlaybackSession` and `FrameConverter`,
+decodes presentation-order ranges or exact timestamp targets, and publishes
+only progress and a bounded summary to the GUI thread. Timeline selections,
+visible ranges, detections, and high-motion analysis samples are copied as
+lightweight request metadata before work starts.
+
 ## Ownership and lifetime
 
 - One process-lifetime RAII guard owns FFmpeg network initialization. Application
@@ -122,6 +154,14 @@ hard-code the analysis algorithms.
   `LumaExtractor`. A media epoch cancels active decode, rejects queued delivery,
   replaces the sample store, and prevents old-media cache results from becoming
   visible. `std::jthread` shutdown cancels, wakes, and joins before destruction.
+- `FrameComparisonManager` owns one `std::jthread` and implicitly shared
+  A/B `QImage` snapshots. A new comparison cancels active work and replaces any
+  pending request; destruction requests cancellation, wakes, and joins before
+  the captured images are released.
+- `ExportManager` owns one `std::jthread`, one thread-confined export
+  session/converter, and at most one request. A media epoch cancels active work;
+  generation checks suppress stale progress, and shutdown wakes and joins
+  before UI receivers or media metadata are released.
 
 ## Timestamp and identity invariants
 
@@ -232,6 +272,13 @@ pause it. Disk checkpoints use `QSaveFile`, a schema/algorithm version, source
 path/size/modification time, stream index, per-document bounds, and global LRU
 pruning.
 
+Paused pixel inspection maps the mouse through the current viewport destination
+rectangle and reads one pixel from the already converted display `QImage`. It
+does not copy or read back the full frame per mouse move. SSIM and PSNR operate
+on normalized RGB images off the GUI thread, checking cancellation per row and
+8x8 SSIM block. Only derived difference/SSIM-map modes allocate another full-
+frame surface; simple compositions reuse the captured implicitly shared images.
+
 The detector caps output per kind, bounds fingerprint candidate history, and
 uses only compact sample metadata. Exact duplicate classification compares the
 downscaled-luma content hash; near duplicates and repeated sections use
@@ -261,6 +308,9 @@ it never creates one QWidget or unconditional paint primitive per video frame.
 actual FFmpeg duration when present, keyframe/picture type, geometry, pixel
 format, color range/space/primaries/transfer, chroma location, bit depth,
 HDR10 mastering-display metadata, and MaxCLL/MaxFALL content-light metadata.
+The Frame Inspector exposes these values directly together with the matching
+motion, similarity, and scene score when analysis is available; unknown values
+remain explicit rather than being inferred.
 
 The decoder tries D3D11VA then DXVA2 on Windows and transfers hardware surfaces
 to system memory for the current renderer. Device/configuration/open failures
@@ -288,4 +338,19 @@ Combined weights (motion `0.50`, similarity difference `0.30`, scene change
 `0.20`), bounded scene/duplicate/repeated/freeze detection, automatic scene
 markers and navigation, threshold-only reanalysis, seekable result lists, and
 background-priority scene thumbnails. Detailed inspection, audio rendering/A-V
-sync, and export remain later phases.
+sync, and export were outside the Phase 8 boundary.
+
+Phase 9 adds the dockable Frame Inspector, exact previous/next navigation,
+Fit/100%/200%/400% image zoom, paused-frame X/Y RGB and display-derived YUV
+inspection, 2x/4x/8x/16x nearest-neighbor magnification with high-zoom grid,
+stable A/B capture, seven viewport comparison modes, 8x8 luminance SSIM, RGB
+PSNR/MSE, cancellable difference rendering, and newest-generation delivery.
+
+Phase 10 adds full-resolution current/previous/next images, decoded selected
+and every-N ranges, keyframe filtering, detected-scene and high-motion targets,
+PNG/JPEG/WebP/BMP/TIFF atomic writes, four contact-sheet sources, preset/custom
+grids, optional labels, non-modal progress, cancellation, and media-generation
+rejection. Frame sequences stream one converted image at a time, contact sheets
+are capped at 1,024 cells and 64 megapixels, and batch output has a 100,000-file
+safety limit. Audio rendering/A-V sync, measured optimization, and later
+professional features remain later phases.
