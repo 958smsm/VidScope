@@ -26,6 +26,61 @@ void validateComparable(const LumaPlane& previous, const LumaPlane& current)
     }
 }
 
+[[nodiscard]] FrameAnalysisMetrics compareValidated(
+    const LumaPlane& previous,
+    const LumaPlane& current,
+    const std::uint64_t previousPerceptualHash,
+    const std::uint64_t currentPerceptualHash)
+{
+    std::array<std::uint64_t, kHistogramBins> previousHistogram{};
+    std::array<std::uint64_t, kHistogramBins> currentHistogram{};
+    std::uint64_t absoluteDifference = 0;
+    for (std::size_t index = 0; index < current.pixels.size(); ++index) {
+        const auto before = previous.pixels[index];
+        const auto after = current.pixels[index];
+        previousHistogram[static_cast<std::size_t>(before) * kHistogramBins / 256U]++;
+        currentHistogram[static_cast<std::size_t>(after) * kHistogramBins / 256U]++;
+        const int difference = static_cast<int>(after) - static_cast<int>(before);
+        absoluteDifference += static_cast<std::uint64_t>(std::abs(difference));
+    }
+
+    std::uint64_t histogramIntersection = 0;
+    for (std::size_t index = 0; index < kHistogramBins; ++index) {
+        histogramIntersection += std::min(previousHistogram[index], currentHistogram[index]);
+    }
+    const double count = static_cast<double>(current.pixels.size());
+    const double motion = std::clamp(
+        static_cast<double>(absoluteDifference) / (255.0 * count),
+        0.0,
+        1.0);
+    const double pixelSimilarity = 1.0 - motion;
+    const double histogramSimilarity = std::clamp(
+        static_cast<double>(histogramIntersection) / count,
+        0.0,
+        1.0);
+    const double perceptualSimilarity = 1.0
+        - static_cast<double>(std::popcount(
+            previousPerceptualHash ^ currentPerceptualHash)) / 64.0;
+
+    FrameAnalysisMetrics result;
+    result.motion = static_cast<float>(motion);
+    result.similarity = static_cast<float>(std::clamp(
+        pixelSimilarity * 0.8 + histogramSimilarity * 0.2,
+        0.0,
+        1.0));
+    result.sceneChange = static_cast<float>(std::clamp(
+        motion * 0.65 + (1.0 - histogramSimilarity) * 0.35,
+        0.0,
+        1.0));
+    result.duplicate = static_cast<float>(std::clamp(
+        pixelSimilarity * 0.6
+            + histogramSimilarity * 0.2
+            + std::min(pixelSimilarity, perceptualSimilarity) * 0.2,
+        0.0,
+        1.0));
+    return result;
+}
+
 } // namespace
 
 bool LumaPlane::isValid() const noexcept
@@ -65,8 +120,20 @@ LumaPlane LumaExtractor::extract(
     const media::DecodedFrame& frame,
     const core::CancellationToken cancellation)
 {
-    if (cancellation.isCancellationRequested()) {
+    LumaPlane result;
+    if (!extract(frame, result, cancellation)) {
         return {};
+    }
+    return result;
+}
+
+bool LumaExtractor::extract(
+    const media::DecodedFrame& frame,
+    LumaPlane& destination,
+    const core::CancellationToken cancellation)
+{
+    if (cancellation.isCancellationRequested()) {
+        return false;
     }
     if (!frame.storage || frame.storage->get() == nullptr) {
         throw std::invalid_argument("The decoded frame has no retained image storage");
@@ -100,33 +167,33 @@ LumaPlane LumaExtractor::extract(
         throw std::runtime_error("FFmpeg could not initialize luma extraction");
     }
 
-    LumaPlane result;
-    result.width = impl_->size.width();
-    result.height = impl_->size.height();
-    const auto pixelCount = static_cast<std::size_t>(result.width)
-        * static_cast<std::size_t>(result.height);
-    result.pixels.resize(pixelCount);
+    destination.width = impl_->size.width();
+    destination.height = impl_->size.height();
+    const auto pixelCount = static_cast<std::size_t>(destination.width)
+        * static_cast<std::size_t>(destination.height);
+    destination.pixels.resize(pixelCount);
     if (cancellation.isCancellationRequested()) {
-        return {};
+        return false;
     }
 
-    std::array<std::uint8_t*, 4> destination{result.pixels.data(), nullptr, nullptr, nullptr};
-    std::array<int, 4> strides{result.width, 0, 0, 0};
+    std::array<std::uint8_t*, 4> outputData{
+        destination.pixels.data(), nullptr, nullptr, nullptr};
+    std::array<int, 4> strides{destination.width, 0, 0, 0};
     const int rows = sws_scale(
         context,
         source->data,
         source->linesize,
         0,
         source->height,
-        destination.data(),
+        outputData.data(),
         strides.data());
-    if (rows != result.height) {
+    if (rows != destination.height) {
         throw std::runtime_error("FFmpeg did not extract the complete luma plane");
     }
     if (cancellation.isCancellationRequested()) {
-        return {};
+        return false;
     }
-    return result;
+    return true;
 }
 
 void LumaExtractor::reset() noexcept
@@ -149,54 +216,25 @@ FrameAnalysisMetrics VideoAnalyzer::compare(
     const LumaPlane& current)
 {
     validateComparable(previous, current);
-    std::array<std::uint64_t, kHistogramBins> previousHistogram{};
-    std::array<std::uint64_t, kHistogramBins> currentHistogram{};
-    std::uint64_t absoluteDifference = 0;
-    for (std::size_t index = 0; index < current.pixels.size(); ++index) {
-        const auto before = previous.pixels[index];
-        const auto after = current.pixels[index];
-        previousHistogram[static_cast<std::size_t>(before) * kHistogramBins / 256U]++;
-        currentHistogram[static_cast<std::size_t>(after) * kHistogramBins / 256U]++;
-        const int difference = static_cast<int>(after) - static_cast<int>(before);
-        absoluteDifference += static_cast<std::uint64_t>(std::abs(difference));
-    }
+    return compareValidated(
+        previous,
+        current,
+        perceptualHash(previous),
+        perceptualHash(current));
+}
 
-    std::uint64_t histogramIntersection = 0;
-    for (std::size_t index = 0; index < kHistogramBins; ++index) {
-        histogramIntersection += std::min(previousHistogram[index], currentHistogram[index]);
-    }
-    const double count = static_cast<double>(current.pixels.size());
-    const double motion = std::clamp(
-        static_cast<double>(absoluteDifference) / (255.0 * count),
-        0.0,
-        1.0);
-    const double pixelSimilarity = 1.0 - motion;
-    const double histogramSimilarity = std::clamp(
-        static_cast<double>(histogramIntersection) / count,
-        0.0,
-        1.0);
-    const auto previousHash = perceptualHash(previous);
-    const auto currentHash = perceptualHash(current);
-    const double perceptualSimilarity = 1.0
-        - static_cast<double>(std::popcount(previousHash ^ currentHash)) / 64.0;
-
-    FrameAnalysisMetrics result;
-    result.motion = static_cast<float>(motion);
-    result.similarity = static_cast<float>(std::clamp(
-        pixelSimilarity * 0.8 + histogramSimilarity * 0.2,
-        0.0,
-        1.0));
-    result.sceneChange = static_cast<float>(std::clamp(
-        motion * 0.65 + (1.0 - histogramSimilarity) * 0.35,
-        0.0,
-        1.0));
-    result.duplicate = static_cast<float>(std::clamp(
-        pixelSimilarity * 0.6
-            + histogramSimilarity * 0.2
-            + std::min(pixelSimilarity, perceptualSimilarity) * 0.2,
-        0.0,
-        1.0));
-    return result;
+FrameAnalysisMetrics VideoAnalyzer::compare(
+    const LumaPlane& previous,
+    const LumaPlane& current,
+    const std::uint64_t previousPerceptualHash,
+    const std::uint64_t currentPerceptualHash)
+{
+    validateComparable(previous, current);
+    return compareValidated(
+        previous,
+        current,
+        previousPerceptualHash,
+        currentPerceptualHash);
 }
 
 float VideoAnalyzer::similarityScore(const LumaPlane& previous, const LumaPlane& current)

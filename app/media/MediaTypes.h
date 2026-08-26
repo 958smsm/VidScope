@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 extern "C" {
 #include <libavutil/avutil.h>
@@ -89,6 +90,15 @@ struct ContentLightMetadata final {
     friend bool operator==(const ContentLightMetadata&, const ContentLightMetadata&) = default;
 };
 
+struct MediaChapter final {
+    std::int64_t id = 0;
+    MediaTime start{};
+    MediaTime end{};
+    std::string title;
+
+    friend bool operator==(const MediaChapter&, const MediaChapter&) = default;
+};
+
 struct DecodedFrame final {
     std::shared_ptr<const FrameStorage> storage;
     FrameId id;
@@ -157,6 +167,7 @@ struct MediaInfo final {
     AVColorSpace colorSpace = AVCOL_SPC_UNSPECIFIED;
     AVColorPrimaries colorPrimaries = AVCOL_PRI_UNSPECIFIED;
     AVColorTransferCharacteristic colorTransfer = AVCOL_TRC_UNSPECIFIED;
+    std::vector<MediaChapter> chapters;
 };
 
 using MediaInfoPtr = std::shared_ptr<const MediaInfo>;

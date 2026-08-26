@@ -693,7 +693,9 @@ private:
                 return outcome;
             }
 
-            std::optional<LumaPlane> previous;
+            LumaPlane previous;
+            LumaPlane current;
+            std::optional<std::uint64_t> previousPerceptualHash;
             std::size_t batchCount = 0;
             media::MediaTime batchStart{};
             media::MediaTime batchEnd{};
@@ -747,8 +749,7 @@ private:
                     break;
                 }
 
-                LumaPlane current = context.extractor->extract(*frame, cancellation);
-                if (!current.isValid()) {
+                if (!context.extractor->extract(*frame, current, cancellation)) {
                     outcome.cancelled = cancellation.isCancellationRequested();
                     break;
                 }
@@ -764,9 +765,14 @@ private:
                 sample.pts = frame->id.pts;
                 sample.keyFrame = frame->keyFrame;
                 sample.contentHash = VideoAnalyzer::contentHash(current);
-                sample.perceptualHash = VideoAnalyzer::perceptualHash(current);
-                if (previous) {
-                    const auto metrics = VideoAnalyzer::compare(*previous, current);
+                const auto currentPerceptualHash = VideoAnalyzer::perceptualHash(current);
+                sample.perceptualHash = currentPerceptualHash;
+                if (previous.isValid() && previousPerceptualHash) {
+                    const auto metrics = VideoAnalyzer::compare(
+                        previous,
+                        current,
+                        *previousPerceptualHash,
+                        currentPerceptualHash);
                     sample.motion = metrics.motion;
                     sample.similarity = metrics.similarity;
                     sample.sceneScore = metrics.sceneChange;
@@ -790,7 +796,8 @@ private:
                         flushBatch();
                     }
                 }
-                previous = std::move(current);
+                std::swap(previous, current);
+                previousPerceptualHash = currentPerceptualHash;
                 navigation = context.session->nextFrame(cancellation);
             }
 

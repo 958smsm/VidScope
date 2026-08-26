@@ -152,17 +152,46 @@ AnalysisResultsPanel::AnalysisResultsPanel(QWidget* parent)
     freezes_->setObjectName(QStringLiteral("freezeResults"));
     freezes_->setHeaderLabels({tr("Frames"), tr("Range"), tr("Similarity")});
     configureTree(freezes_);
+    visualMatches_ = new QTreeWidget(tabs_);
+    visualMatches_->setObjectName(QStringLiteral("visualSearchResults"));
+    visualMatches_->setHeaderLabels({tr("Frame"), tr("Time"), tr("Similarity"), tr("Distance")});
+    configureTree(visualMatches_);
     tabs_->addTab(scenes_, tr("Scenes"));
     tabs_->addTab(duplicates_, tr("Duplicates"));
     tabs_->addTab(freezes_, tr("Freezes"));
+    tabs_->addTab(visualMatches_, tr("Visual Search"));
     root->addWidget(tabs_, 1);
 
-    for (auto* tree : {scenes_, duplicates_, freezes_}) {
+    for (auto* tree : {scenes_, duplicates_, freezes_, visualMatches_}) {
         connect(tree, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int) {
             activateItem(item);
         });
     }
     setDetectionConfig(config_);
+}
+
+void AnalysisResultsPanel::setVisualMatches(
+    const std::vector<analysis::VisualMatch>& matches)
+{
+    visualMatches_->clear();
+    for (const auto& match : matches) {
+        auto* item = new QTreeWidgetItem(visualMatches_);
+        item->setText(
+            0,
+            match.presentationIndex >= 0
+                ? QString::number(match.presentationIndex)
+                : tr("Unknown"));
+        item->setText(1, formatTime(match.presentationTime));
+        item->setText(2, percent(match.similarity));
+        item->setText(3, QString::number(match.hammingDistance));
+        item->setData(
+            0,
+            kTimestampRole,
+            QVariant::fromValue<qint64>(
+                static_cast<qint64>(match.presentationTime.count())));
+    }
+    tabs_->setTabText(3, tr("Visual Search (%1)").arg(matches.size()));
+    tabs_->setCurrentWidget(visualMatches_);
 }
 
 void AnalysisResultsPanel::configureTree(QTreeWidget* tree)
@@ -246,6 +275,7 @@ void AnalysisResultsPanel::setResults(const analysis::DetectionResults& results)
     scenes_->clear();
     duplicates_->clear();
     freezes_->clear();
+    visualMatches_->clear();
 
     std::size_t sceneNumber = 1;
     for (const auto& scene : results_.scenes) {
@@ -316,6 +346,7 @@ void AnalysisResultsPanel::clearResults()
     tabs_->setTabText(0, tr("Scenes"));
     tabs_->setTabText(1, tr("Duplicates"));
     tabs_->setTabText(2, tr("Freezes"));
+    tabs_->setTabText(3, tr("Visual Search"));
     summary_->setText(tr("No detection results"));
 }
 

@@ -1,9 +1,8 @@
-# VidScope Phase 0-10 architecture
+# VidScope Phase 0-12 architecture
 
 VidScope is a C++20, Qt 6.11.2, direct-FFmpeg video inspection application.
-Phase 10 adds full-resolution frame/range export and bounded contact-sheet
-generation above the playback, analysis, detection, and inspection pipeline
-without
+Phase 12 adds professional chapter, marker, history, visual-search, and
+diagnostics workflows above the measured Phase 11 optimization pass without
 weakening the frame-accurate playback, timestamp, ownership, preview,
 cancellation, or thread boundaries established earlier.
 
@@ -151,9 +150,11 @@ lightweight request metadata before work starts.
   coordination first, then joins the analysis and thumbnail workers before the
   playback controller.
 - The analysis worker owns one thread-confined `PlaybackSession` and
-  `LumaExtractor`. A media epoch cancels active decode, rejects queued delivery,
-  replaces the sample store, and prevents old-media cache results from becoming
-  visible. `std::jthread` shutdown cancels, wakes, and joins before destruction.
+  `LumaExtractor`. It swaps two reusable luma planes and carries the previous
+  perceptual hash, avoiding per-frame vector allocation and redundant hash
+  passes. A media epoch cancels active decode, rejects queued delivery, replaces
+  the sample store, and prevents old-media cache results from becoming visible.
+  `std::jthread` shutdown cancels, wakes, and joins before destruction.
 - `FrameComparisonManager` owns one `std::jthread` and implicitly shared
   A/B `QImage` snapshots. A new comparison cancels active work and replaces any
   pending request; destruction requests cancellation, wakes, and joins before
@@ -212,10 +213,15 @@ Stored markers are sorted by `(time, id)`. A surviving marker keeps its
 monotonic ID through sorting and updates, and removed or reset IDs are never
 reused. Keyframe, scene, chapter, and bookmark kinds share the bounded marker
 store. Observed decoded keyframes are an independent derived frame layer, so
-they do not consume stored-marker capacity. Scene-marker navigation is ready for
-detected scene markers are replaced from the latest detection snapshot.
+they do not consume stored-marker capacity. Detected scene markers are replaced
+from the latest detection snapshot.
 Previous/next scene actions query the same sorted marker store, so navigation
 and the visible scene lines cannot disagree.
+Phase 12 extends each stored marker with a free-form category and note while
+retaining the same 10,000-entry cap, stable ID, and `(time, id)` ordering.
+Embedded container chapters are normalized onto VidScope's application-relative
+nanosecond timeline and installed as chapter markers. Previous/next chapter
+navigation therefore uses the same authoritative marker lookup as painting.
 
 Selections normalize forward and reverse gestures into `start <= end` and are
 clamped to media extent. Selection details return exact first/last established
@@ -243,6 +249,13 @@ Next-frame consumes the immediate buffered/cache successor. Previous-frame
 uses bounded history first and reconstructs from an earlier safe seek point on
 a miss. Keyframe and signed N-frame commands use the same exact
 presentation-order primitives.
+
+The professional inspection history is separate from the decoder cache. It is
+a GUI-thread-owned, 128-entry browser history containing only frame identity,
+time, duration, keyframe state, and picture type. Consecutive visits to the
+same logical frame coalesce; visiting a new frame after moving backward drops
+the stale forward branch. Back/forward actions issue an ordinary timestamp
+seek, so all decode correctness remains in `PlaybackSession`.
 
 ## Memory, threading, and responsiveness
 
@@ -293,6 +306,11 @@ ancestors. A paint query chooses the first level whose visible bucket count fits
 the device-pixel budget and copies only populated buckets, with the existing
 4,096 timeline primitive ceiling as a final guard. Multi-hour overview painting
 therefore remains proportional to viewport pixels rather than frame count.
+`TimelineWidget` rasterizes that bounded view only when analysis data, viewport,
+mode, weights, widget size, or device pixel ratio changes. Ordinary playhead,
+hover, marker, and selection paints blit the cached premultiplied image and then
+draw their dynamic overlays, so interaction does not rerun hundreds of heatmap
+paint primitives.
 
 Timeline known-frame metadata defaults to a hard 100,000-entry cap and uses
 deque storage plus a presentation-index location map for efficient append,
@@ -315,6 +333,12 @@ remain explicit rather than being inferred.
 The decoder tries D3D11VA then DXVA2 on Windows and transfers hardware surfaces
 to system memory for the current renderer. Device/configuration/open failures
 retry the CPU decoder, so correctness does not depend on GPU availability.
+`PlaybackController` publishes a diagnostics snapshot with each coalesced GUI
+delivery. It includes smoothed decoder rate, last seek latency, bounded command
+and decoded-frame queue depths, full frame-cache counters, delivered/coalesced
+drop counts, and the active hardware device name. GPU utilization is shown as
+unavailable when the selected FFmpeg backend exposes no portable utilization
+counter rather than inventing a value.
 
 ## Phase boundary
 
@@ -352,5 +376,27 @@ PNG/JPEG/WebP/BMP/TIFF atomic writes, four contact-sheet sources, preset/custom
 grids, optional labels, non-modal progress, cancellation, and media-generation
 rejection. Frame sequences stream one converted image at a time, contact sheets
 are capped at 1,024 cells and 64 megapixels, and batch output has a 100,000-file
-safety limit. Audio rendering/A-V sync, measured optimization, and later
-professional features remain later phases.
+safety limit. Audio rendering/A-V sync and later professional features remain
+outside the Phase 10 boundary.
+
+Phase 11 adds the `vidscope_phase11_benchmarks` Release profiler, reusable luma
+extraction, precomputed-hash comparison, and the invalidation-aware heatmap
+raster cache. Profiling retained the existing D3D11VA/DXVA2 fallback, bounded
+LRU caches, seek pipeline, thumbnail worker architecture, LOD locks, and QWidget
+system-memory presentation because their measurements did not justify a more
+complex replacement. Audio rendering/A-V sync and later professional features
+remain later phases.
+
+Phase 12 adds chapter extraction/navigation, categorized marker notes, bounded
+inspection history and recent-frame browsing, perceptual-hash visual search,
+the existing thumbnail-backed scene browser, and live decoder/drop/cache/GPU
+diagnostics in the Professional Tools dock. Visual search operates only on
+already available compact analysis samples, caps results, and never starts a
+second full-resolution decode pass.
+
+Audio waveform and subtitle track/search features were considered but remain
+outside this boundary: the application intentionally has no audio rendering or
+subtitle decode/normalization pipeline yet, and implementing either as a
+metadata-only facade would be misleading. A plugin architecture is likewise
+deferred until a concrete extension contract justifies a stable ABI, lifecycle,
+threading, and compatibility policy.

@@ -1,6 +1,7 @@
 #include "widgets/MainWindow.h"
 
 #include "analysis/AnalysisManager.h"
+#include "analysis/VisualSearch.h"
 #include "export/ExportManager.h"
 #include "render/VideoViewport.h"
 #include "timeline/TimelineWidget.h"
@@ -10,11 +11,13 @@
 #include "widgets/FrameInspectorPanel.h"
 #include "widgets/HoverPreviewController.h"
 #include "widgets/AnalysisResultsPanel.h"
+#include "widgets/ProfessionalPanel.h"
 #include "widgets/ShortcutEditorDialog.h"
 
 #include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QSettings>
+#include <QtCore/QSignalBlocker>
 #include <QtGui/QAction>
 #include <QtGui/QActionGroup>
 #include <QtGui/QFontDatabase>
@@ -23,16 +26,21 @@
 #include <QtGui/QKeySequence>
 #include <QtWidgets/QApplication>
 #include <QtWidgets/QComboBox>
+#include <QtWidgets/QDialog>
+#include <QtWidgets/QDialogButtonBox>
 #include <QtWidgets/QDockWidget>
 #include <QtWidgets/QFileDialog>
 #include <QtWidgets/QFrame>
+#include <QtWidgets/QFormLayout>
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QInputDialog>
 #include <QtWidgets/QLabel>
+#include <QtWidgets/QLineEdit>
 #include <QtWidgets/QMenu>
 #include <QtWidgets/QMenuBar>
 #include <QtWidgets/QMessageBox>
 #include <QtWidgets/QProgressDialog>
+#include <QtWidgets/QPlainTextEdit>
 #include <QtWidgets/QScrollArea>
 #include <QtWidgets/QStatusBar>
 #include <QtWidgets/QStyle>
@@ -336,6 +344,8 @@ MainWindow::MainWindow(QWidget* parent)
         frameInspector_->clear();
         currentFrame_.reset();
         mediaInfo_.reset();
+        frameHistory_.clear();
+        professionalPanel_->clear();
         timeline_->setDuration(0);
         mediaStatus_->setText(tr("No media loaded"));
         frameStatus_->setText(tr("Frame -"));
@@ -383,6 +393,11 @@ MainWindow::MainWindow(QWidget* parent)
                 }
             });
     connect(
+        controller_,
+        &playback::PlaybackController::diagnosticsUpdated,
+        professionalPanel_,
+        &ProfessionalPanel::setDiagnostics);
+    connect(
         thumbnailManager_,
         &thumbnails::ThumbnailManager::cacheStatsChanged,
         this,
@@ -415,6 +430,11 @@ MainWindow::MainWindow(QWidget* parent)
                     tr("Marker at %1").arg(formatTime(time)),
                     1500);
             });
+    connect(
+        timeline_,
+        &timeline::TimelineWidget::markersChanged,
+        this,
+        &MainWindow::updateProfessionalTools);
     connect(
         analysisManager_,
         &analysis::AnalysisManager::samplesAvailable,
@@ -503,6 +523,25 @@ MainWindow::MainWindow(QWidget* parent)
         &AnalysisResultsPanel::reanalyzeRequested,
         analysisManager_,
         &analysis::AnalysisManager::setDetectionConfig);
+    connect(
+        professionalPanel_,
+        &ProfessionalPanel::seekRequested,
+        controller_,
+        &playback::PlaybackController::seekToNanoseconds);
+    connect(
+        professionalPanel_,
+        &ProfessionalPanel::editMarkerRequested,
+        this,
+        [this](const quint64 id) {
+            showMarkerEditor(static_cast<std::uint64_t>(id));
+        });
+    connect(
+        professionalPanel_,
+        &ProfessionalPanel::deleteMarkerRequested,
+        this,
+        [this](const quint64 id) {
+            (void)timeline_->removeMarker(static_cast<std::uint64_t>(id));
+        });
     connect(
         analysisManager_,
         &analysis::AnalysisManager::progressChanged,
@@ -692,10 +731,37 @@ void MainWindow::createActions()
             controller_, &playback::PlaybackController::nextKeyframe);
 
     auto* previousScene = createAction("actionPreviousScene", tr("Previous &Scene"));
-    connect(previousScene, &QAction::triggered, this, [this] { seekAdjacentScene(false); });
+    connect(previousScene, &QAction::triggered, this, [this] {
+        seekAdjacentMarker(timeline::TimelineMarkerKind::Scene, false);
+    });
 
     auto* nextScene = createAction("actionNextScene", tr("Next S&cene"));
-    connect(nextScene, &QAction::triggered, this, [this] { seekAdjacentScene(true); });
+    connect(nextScene, &QAction::triggered, this, [this] {
+        seekAdjacentMarker(timeline::TimelineMarkerKind::Scene, true);
+    });
+
+    auto* previousChapter =
+        createAction("actionPreviousChapter", tr("Previous C&hapter"));
+    connect(previousChapter, &QAction::triggered, this, [this] {
+        seekAdjacentMarker(timeline::TimelineMarkerKind::Chapter, false);
+    });
+
+    auto* nextChapter = createAction("actionNextChapter", tr("Next Ch&apter"));
+    connect(nextChapter, &QAction::triggered, this, [this] {
+        seekAdjacentMarker(timeline::TimelineMarkerKind::Chapter, true);
+    });
+
+    auto* historyBack =
+        createAction("actionHistoryBack", tr("Inspection History &Back"));
+    connect(historyBack, &QAction::triggered, this, [this] {
+        navigateHistory(false);
+    });
+
+    auto* historyForward =
+        createAction("actionHistoryForward", tr("Inspection History &Forward"));
+    connect(historyForward, &QAction::triggered, this, [this] {
+        navigateHistory(true);
+    });
 
     auto* zoomIn = createAction("actionTimelineZoomIn", tr("Zoom &In"));
     connect(zoomIn, &QAction::triggered, this, [this] {
@@ -753,6 +819,22 @@ void MainWindow::createActions()
             filmstripController_->refreshNow();
         }
     });
+
+    auto* addAnnotatedMarker =
+        createAction("actionAddAnnotatedMarker", tr("Add Annotated &Marker..."));
+    connect(
+        addAnnotatedMarker,
+        &QAction::triggered,
+        this,
+        [this] { showMarkerEditor(); });
+
+    auto* visualSearch =
+        createAction("actionVisualSearch", tr("Find Visually &Similar Frames"));
+    connect(
+        visualSearch,
+        &QAction::triggered,
+        this,
+        &MainWindow::findVisualMatches);
 
     auto* setFrameA = createAction("actionSetFrameA", tr("Set Frame &A"));
     connect(setFrameA, &QAction::triggered, this, [this] {
@@ -1099,6 +1181,17 @@ void MainWindow::createLayout()
     tabifyDockWidget(analysisResultsDock_, frameInspectorDock_);
     frameInspectorDock_->raise();
 
+    professionalDock_ = new QDockWidget(tr("Professional Tools"), this);
+    professionalDock_->setObjectName(QStringLiteral("professionalToolsDock"));
+    professionalDock_->setAllowedAreas(
+        Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    professionalDock_->setMinimumWidth(400);
+    professionalPanel_ = new ProfessionalPanel(professionalDock_);
+    professionalDock_->setWidget(professionalPanel_);
+    addDockWidget(Qt::RightDockWidgetArea, professionalDock_);
+    tabifyDockWidget(frameInspectorDock_, professionalDock_);
+    frameInspectorDock_->raise();
+
     statusBar()->setSizeGripEnabled(true);
     statusBar()->showMessage(tr("Ready"));
 
@@ -1195,6 +1288,11 @@ void MainWindow::createMenus()
     navigationMenu->addAction(actionByName(this, "actionNextKeyframe"));
     navigationMenu->addAction(actionByName(this, "actionPreviousScene"));
     navigationMenu->addAction(actionByName(this, "actionNextScene"));
+    navigationMenu->addAction(actionByName(this, "actionPreviousChapter"));
+    navigationMenu->addAction(actionByName(this, "actionNextChapter"));
+    navigationMenu->addSeparator();
+    navigationMenu->addAction(actionByName(this, "actionHistoryBack"));
+    navigationMenu->addAction(actionByName(this, "actionHistoryForward"));
 
     auto* timelineMenu = menuBar()->addMenu(tr("&Timeline"));
     timelineMenu->addAction(actionByName(this, "actionTimelineZoomIn"));
@@ -1206,6 +1304,7 @@ void MainWindow::createMenus()
     timelineMenu->addAction(actionByName(this, "actionClearSelection"));
     timelineMenu->addSeparator();
     timelineMenu->addAction(actionByName(this, "actionAddMarker"));
+    timelineMenu->addAction(actionByName(this, "actionAddAnnotatedMarker"));
     timelineMenu->addSeparator();
     timelineMenu->addAction(actionByName(this, "actionRefreshFilmstrip"));
 
@@ -1214,6 +1313,8 @@ void MainWindow::createMenus()
     analysisMenu->addAction(actionByName(this, "actionHeatmapSimilarity"));
     analysisMenu->addAction(actionByName(this, "actionHeatmapSceneChange"));
     analysisMenu->addAction(actionByName(this, "actionHeatmapCombined"));
+    analysisMenu->addSeparator();
+    analysisMenu->addAction(actionByName(this, "actionVisualSearch"));
 
     auto* inspectionMenu = menuBar()->addMenu(tr("&Inspection"));
     inspectionMenu->addAction(actionByName(this, "actionSetFrameA"));
@@ -1227,6 +1328,7 @@ void MainWindow::createMenus()
     viewMenu->addAction(actionByName(this, "actionFullscreen"));
     viewMenu->addAction(analysisResultsDock_->toggleViewAction());
     viewMenu->addAction(frameInspectorDock_->toggleViewAction());
+    viewMenu->addAction(professionalDock_->toggleViewAction());
 
     auto* settingsMenu = menuBar()->addMenu(tr("&Settings"));
     settingsMenu->addAction(actionByName(this, "actionKeyboardShortcuts"));
@@ -1266,9 +1368,23 @@ void MainWindow::createShortcuts()
         QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_Left))});
     configure("actionNextScene", {
         QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_Right))});
+    configure("actionPreviousChapter", {
+        QKeySequence(QKeyCombination(
+            Qt::ControlModifier | Qt::AltModifier,
+            Qt::Key_Left))});
+    configure("actionNextChapter", {
+        QKeySequence(QKeyCombination(
+            Qt::ControlModifier | Qt::AltModifier,
+            Qt::Key_Right))});
+    configure("actionHistoryBack", {
+        QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_BracketLeft))});
+    configure("actionHistoryForward", {
+        QKeySequence(QKeyCombination(Qt::AltModifier, Qt::Key_BracketRight))});
     configure("actionSetIn", {QKeySequence(Qt::Key_I)});
     configure("actionSetOut", {QKeySequence(Qt::Key_O)});
     configure("actionAddMarker", {QKeySequence(Qt::Key_M)});
+    configure("actionAddAnnotatedMarker", {
+        QKeySequence(QKeyCombination(Qt::ShiftModifier, Qt::Key_M))});
     configure("actionClearSelection", {
         QKeySequence(QKeyCombination(Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_X))});
     configure("actionTimelineZoomIn", {QKeySequence(QKeySequence::ZoomIn)});
@@ -1323,6 +1439,8 @@ void MainWindow::openFile()
     frameInspector_->clear();
     currentFrame_.reset();
     mediaInfo_.reset();
+    frameHistory_.clear();
+    professionalPanel_->clear();
     opening_ = true;
     timeline_->setDuration(0);
     updateSelectionStatus();
@@ -1344,6 +1462,22 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
     analysisManager_->setMedia(info);
     handleState(controller_->state());
     timeline_->setDuration(static_cast<qint64>(info->duration.count()));
+    {
+        const QSignalBlocker markerSignals(timeline_);
+        std::size_t chapterNumber = 1;
+        for (const auto& chapter : info->chapters) {
+            const QString title = chapter.title.empty()
+                ? tr("Chapter %1").arg(chapterNumber)
+                : QString::fromUtf8(chapter.title);
+            (void)timeline_->addMarker(
+                static_cast<qint64>(chapter.start.count()),
+                timeline::TimelineMarkerKind::Chapter,
+                title,
+                tr("Chapter"));
+            ++chapterNumber;
+        }
+    }
+    updateProfessionalTools();
     filmstripController_->setMedia(info);
     updateSelectionStatus();
 
@@ -1366,7 +1500,7 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
         : QString::fromStdString(info->containerName);
     mediaStatus_->setToolTip(
         tr("Container: %1\nCodec: %2\nPixel format: %3\nBit depth: %4\n"
-           "Time base: %5/%6\nDuration: %7\nDeclared frames: %8")
+           "Time base: %5/%6\nDuration: %7\nDeclared frames: %8\nChapters: %9")
             .arg(container)
             .arg(codec)
             .arg(pixelFormatName(info->pixelFormat))
@@ -1375,7 +1509,8 @@ void MainWindow::handleMediaOpened(media::MediaInfoPtr info)
             .arg(info->timeBase.den)
             .arg(formatTime(static_cast<qint64>(info->duration.count())))
             .arg(info->declaredFrameCount > 0 ? QString::number(info->declaredFrameCount)
-                                              : tr("unknown")));
+                                              : tr("unknown"))
+            .arg(info->chapters.size()));
     statusBar()->showMessage(tr("Opened %1").arg(fileName), 4000);
 }
 
@@ -1389,6 +1524,7 @@ void MainWindow::handleFrame(media::DecodedFramePtr frame, const QImage& image)
         static_cast<qint64>(frame->presentationTime.count()));
     filmstripController_->notifyFrameObserved();
     currentFrame_ = frame;
+    (void)frameHistory_.visit(*frame);
     viewport_->setFrame(image);
     frameInspector_->setFrame(
         frame,
@@ -1399,6 +1535,7 @@ void MainWindow::handleFrame(media::DecodedFramePtr frame, const QImage& image)
     updateFrameStatus(*frame);
     updateSelectionStatus();
     updateExportActions();
+    updateProfessionalTools();
 }
 
 void MainWindow::handleState(playback::PlaybackState state)
@@ -1427,6 +1564,10 @@ void MainWindow::handleState(playback::PlaybackState state)
              "actionNextKeyframe",
              "actionPreviousScene",
              "actionNextScene",
+             "actionPreviousChapter",
+             "actionNextChapter",
+             "actionAddAnnotatedMarker",
+             "actionVisualSearch",
              "actionTimelineZoomIn",
              "actionTimelineZoomOut",
              "actionTimelineShowAll",
@@ -1448,8 +1589,10 @@ void MainWindow::handleState(playback::PlaybackState state)
     analysisResults_->setEnabled(hasMedia);
     frameInspector_->setEnabled(hasMedia);
     frameInspector_->setPaused(hasMedia && !playing);
+    professionalPanel_->setEnabled(hasMedia);
     statusBar()->showMessage(stateDescription(state));
     updateExportActions();
+    updateProfessionalTools();
 }
 
 void MainWindow::exportSingleFrame(const exporting::RelativeFrame relativeFrame)
@@ -2134,35 +2277,220 @@ void MainWindow::applyDetectionResults()
     } else {
         analysisResults_->setResults(results);
     }
-    timeline_->clearMarkers(timeline::TimelineMarkerKind::Scene);
-    std::size_t index = 1;
-    for (const auto& scene : results.scenes) {
-        if (!timeline_->addMarker(
-                static_cast<qint64>(scene.start.count()),
-                timeline::TimelineMarkerKind::Scene,
-                tr("Scene %1").arg(index++))) {
-            break;
+    {
+        const QSignalBlocker markerSignals(timeline_);
+        timeline_->clearMarkers(timeline::TimelineMarkerKind::Scene);
+        std::size_t index = 1;
+        for (const auto& scene : results.scenes) {
+            if (!timeline_->addMarker(
+                    static_cast<qint64>(scene.start.count()),
+                    timeline::TimelineMarkerKind::Scene,
+                    tr("Scene %1").arg(index++))) {
+                break;
+            }
         }
     }
+    updateProfessionalTools();
     updateExportActions();
 }
 
-void MainWindow::seekAdjacentScene(const bool forward)
+void MainWindow::seekAdjacentMarker(
+    const timeline::TimelineMarkerKind kind,
+    const bool forward)
 {
     if (!timeline_) {
         return;
     }
     const auto target = timeline_->adjacentMarkerNanoseconds(
-        timeline::TimelineMarkerKind::Scene,
+        kind,
         forward);
     if (!target) {
+        const QString markerName =
+            kind == timeline::TimelineMarkerKind::Chapter ? tr("chapter") : tr("scene");
         statusBar()->showMessage(
-            forward ? tr("No next scene marker is available")
-                    : tr("No previous scene marker is available"),
+            forward
+                ? tr("No next %1 marker is available").arg(markerName)
+                : tr("No previous %1 marker is available").arg(markerName),
             3000);
         return;
     }
     controller_->seekToNanoseconds(*target);
+}
+
+void MainWindow::navigateHistory(const bool forward)
+{
+    const auto target = forward ? frameHistory_.forward() : frameHistory_.back();
+    if (!target) {
+        statusBar()->showMessage(
+            forward ? tr("No newer inspected frame is available")
+                    : tr("No older inspected frame is available"),
+            2500);
+        updateProfessionalTools();
+        return;
+    }
+    controller_->pause();
+    controller_->seekToNanoseconds(
+        static_cast<qint64>(target->time.count()));
+    updateProfessionalTools();
+}
+
+void MainWindow::showMarkerEditor(
+    const std::optional<std::uint64_t> markerId)
+{
+    if (timeline_ == nullptr || !timeline_->model().hasMedia()) {
+        return;
+    }
+
+    std::optional<timeline::TimelineMarker> existing;
+    if (markerId) {
+        const auto markers = timeline_->model().markers();
+        const auto found = std::find_if(
+            markers.begin(),
+            markers.end(),
+            [markerId](const timeline::TimelineMarker& marker) {
+                return marker.id == *markerId;
+            });
+        if (found == markers.end()) {
+            return;
+        }
+        existing = *found;
+    }
+
+    QDialog dialog(this);
+    dialog.setObjectName(QStringLiteral("markerEditor"));
+    dialog.setWindowTitle(existing ? tr("Edit Marker") : tr("Add Annotated Marker"));
+    auto* root = new QVBoxLayout(&dialog);
+    auto* form = new QFormLayout;
+
+    auto* kind = new QComboBox(&dialog);
+    kind->setObjectName(QStringLiteral("markerKind"));
+    kind->addItem(
+        tr("Bookmark"),
+        static_cast<int>(timeline::TimelineMarkerKind::Bookmark));
+    kind->addItem(
+        tr("Scene"),
+        static_cast<int>(timeline::TimelineMarkerKind::Scene));
+    kind->addItem(
+        tr("Chapter"),
+        static_cast<int>(timeline::TimelineMarkerKind::Chapter));
+    kind->addItem(
+        tr("Keyframe"),
+        static_cast<int>(timeline::TimelineMarkerKind::Keyframe));
+    form->addRow(tr("Type"), kind);
+
+    auto* category = new QComboBox(&dialog);
+    category->setObjectName(QStringLiteral("markerCategory"));
+    category->setEditable(true);
+    category->addItems(
+        {tr("Review"), tr("Issue"), tr("Favorite"), tr("Note")});
+    form->addRow(tr("Category"), category);
+
+    auto* label = new QLineEdit(&dialog);
+    label->setObjectName(QStringLiteral("markerLabel"));
+    form->addRow(tr("Label"), label);
+
+    auto* note = new QPlainTextEdit(&dialog);
+    note->setObjectName(QStringLiteral("markerNote"));
+    note->setPlaceholderText(tr("Optional inspection note"));
+    note->setMaximumHeight(120);
+    form->addRow(tr("Note"), note);
+    root->addLayout(form);
+
+    if (existing) {
+        const int kindIndex = kind->findData(static_cast<int>(existing->kind));
+        if (kindIndex >= 0) {
+            kind->setCurrentIndex(kindIndex);
+        }
+        category->setCurrentText(existing->category);
+        label->setText(existing->label);
+        note->setPlainText(existing->note);
+    } else {
+        label->setText(tr("Marker"));
+    }
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel,
+        &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    root->addWidget(buttons);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const auto markerKind = static_cast<timeline::TimelineMarkerKind>(
+        kind->currentData().toInt());
+    const qint64 time = existing
+        ? static_cast<qint64>(existing->time.count())
+        : static_cast<qint64>(timeline_->model().playhead().count());
+    if (existing) {
+        (void)timeline_->updateMarker(
+            existing->id,
+            time,
+            markerKind,
+            label->text(),
+            category->currentText(),
+            note->toPlainText());
+    } else {
+        (void)timeline_->addMarker(
+            time,
+            markerKind,
+            label->text(),
+            category->currentText(),
+            note->toPlainText());
+    }
+}
+
+void MainWindow::findVisualMatches()
+{
+    if (!currentFrame_ || !mediaInfo_ || analysisManager_ == nullptr) {
+        return;
+    }
+    const qint64 currentTime =
+        static_cast<qint64>(currentFrame_->presentationTime.count());
+    const auto query = analysisManager_->sampleFor(
+        currentTime,
+        currentFrame_->id.presentationIndex);
+    if (!query || !query->perceptualHash) {
+        analysisManager_->requestPlayhead(currentTime);
+        statusBar()->showMessage(
+            tr("The current frame is still being analyzed; try visual search again shortly."),
+            3500);
+        return;
+    }
+
+    const auto samples = analysisManager_->samplesInRange(
+        0,
+        static_cast<qint64>(mediaInfo_->duration.count()),
+        250'000);
+    const auto matches = analysis::VisualSearch::findSimilar(
+        samples,
+        *query->perceptualHash,
+        query->presentationTime,
+        query->presentationIndex);
+    analysisResults_->setVisualMatches(matches);
+    analysisResultsDock_->show();
+    analysisResultsDock_->raise();
+    statusBar()->showMessage(
+        tr("Found %1 visually similar analyzed frames.").arg(matches.size()),
+        3500);
+}
+
+void MainWindow::updateProfessionalTools()
+{
+    if (professionalPanel_ == nullptr || timeline_ == nullptr) {
+        return;
+    }
+    professionalPanel_->setHistory(
+        frameHistory_.entries(),
+        frameHistory_.currentIndex());
+    professionalPanel_->setMarkers(timeline_->model().markers());
+    if (auto* action = actionByName(this, "actionHistoryBack")) {
+        action->setEnabled(mediaInfo_ && frameHistory_.canGoBack());
+    }
+    if (auto* action = actionByName(this, "actionHistoryForward")) {
+        action->setEnabled(mediaInfo_ && frameHistory_.canGoForward());
+    }
 }
 
 void MainWindow::showShortcutEditor()

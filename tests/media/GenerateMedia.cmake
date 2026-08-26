@@ -92,3 +92,24 @@ generate_fixture(
     -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=1"
     -vn -c:a pcm_s16le
 )
+
+file(WRITE "${OUTPUT_DIR}/chapters.ffmeta"
+    ";FFMETADATA1\n"
+    "[CHAPTER]\n"
+    "TIMEBASE=1/1000\n"
+    "START=0\n"
+    "END=1000\n"
+    "title=Opening\n"
+    "[CHAPTER]\n"
+    "TIMEBASE=1/1000\n"
+    "START=1000\n"
+    "END=2000\n"
+    "title=Detail\n")
+
+generate_fixture(
+    chapters.mkv
+    -i "${OUTPUT_DIR}/cfr_no_b.mp4"
+    -f ffmetadata -i "${OUTPUT_DIR}/chapters.ffmeta"
+    -map 0:v:0 -map_metadata 1
+    -c copy
+)

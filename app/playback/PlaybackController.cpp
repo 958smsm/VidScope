@@ -186,6 +186,7 @@ private:
         double decodeFramesPerSecond = 0.0;
         qint64 seekMicroseconds = 0;
         qsizetype cachedFrames = 0;
+        PlaybackDiagnostics diagnostics;
     };
 
     struct FrameDeliveryState final {
@@ -193,6 +194,8 @@ private:
         std::optional<GuiFrameDelivery> latest;
         bool callbackQueued = false;
         bool accepting = true;
+        std::uint64_t deliveredFrames = 0;
+        std::uint64_t droppedFrameDeliveries = 0;
     };
 
     struct WorkerContext final {
@@ -261,6 +264,11 @@ private:
             } else {
                 command.lifecycleEpoch = lifecycleEpoch_->load(std::memory_order_acquire);
             }
+        }
+        if (command.type == CommandType::Open) {
+            std::lock_guard deliveryLock(frameDelivery_->mutex);
+            frameDelivery_->deliveredFrames = 0;
+            frameDelivery_->droppedFrameDeliveries = 0;
         }
 
         std::lock_guard lock(commandMutex_);
@@ -381,6 +389,14 @@ private:
         return !commands_.empty();
     }
 
+    [[nodiscard]] qsizetype pendingCommandCount() const
+    {
+        std::lock_guard lock(commandMutex_);
+        return static_cast<qsizetype>(std::min<std::size_t>(
+            commands_.size(),
+            static_cast<std::size_t>(std::numeric_limits<qsizetype>::max())));
+    }
+
     void setState(PlaybackState state)
     {
         const auto previous = state_.exchange(state, std::memory_order_acq_rel);
@@ -462,6 +478,19 @@ private:
         const auto cachedFrames = static_cast<qsizetype>(std::min<std::size_t>(
             stats.frameCount,
             static_cast<std::size_t>(std::numeric_limits<qsizetype>::max())));
+        PlaybackDiagnostics diagnostics;
+        diagnostics.decodeFramesPerSecond = context.smoothedDecodeFps;
+        diagnostics.seekMicroseconds = context.lastSeekMicroseconds;
+        diagnostics.frameCache = stats;
+        diagnostics.bufferedFrames = static_cast<qsizetype>(
+            std::min<std::size_t>(
+                context.session.bufferedFrames(),
+                static_cast<std::size_t>(std::numeric_limits<qsizetype>::max())));
+        diagnostics.pendingCommands = pendingCommandCount();
+        diagnostics.hardwareDecodeActive =
+            context.session.usesHardwareAcceleration();
+        diagnostics.hardwareDevice =
+            QString::fromStdString(context.session.hardwareDeviceName());
         GuiFrameDelivery delivery{
             std::move(frame),
             std::move(image),
@@ -469,6 +498,7 @@ private:
             context.smoothedDecodeFps,
             context.lastSeekMicroseconds,
             cachedFrames,
+            std::move(diagnostics),
         };
 
         const auto state = frameDelivery_;
@@ -477,6 +507,9 @@ private:
             std::lock_guard lock(state->mutex);
             if (!state->accepting) {
                 return;
+            }
+            if (state->latest) {
+                ++state->droppedFrameDeliveries;
             }
             state->latest = std::move(delivery);
             if (!state->callbackQueued) {
@@ -509,12 +542,21 @@ private:
                     || gate->load(std::memory_order_acquire) != current->epoch) {
                     return;
                 }
+                {
+                    std::lock_guard lock(state->mutex);
+                    ++state->deliveredFrames;
+                    current->diagnostics.deliveredFrames =
+                        state->deliveredFrames;
+                    current->diagnostics.droppedFrameDeliveries =
+                        state->droppedFrameDeliveries;
+                }
                 emit owner->frameReady(current->frame, current->image);
                 emit owner->positionChanged(toQtNanoseconds(current->frame->presentationTime));
                 emit owner->metricsUpdated(
                     current->decodeFramesPerSecond,
                     current->seekMicroseconds,
                     current->cachedFrames);
+                emit owner->diagnosticsUpdated(current->diagnostics);
             },
             Qt::QueuedConnection);
         if (!queued) {

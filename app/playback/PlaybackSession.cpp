@@ -343,9 +343,19 @@ public:
         return cache_.stats();
     }
 
+    [[nodiscard]] std::size_t bufferedFrameCount() const
+    {
+        return bufferedFrames();
+    }
+
     [[nodiscard]] bool usesHardwareAcceleration() const noexcept
     {
         return decoder_ && decoder_->usesHardwareAcceleration();
+    }
+
+    [[nodiscard]] std::string hardwareDeviceName() const
+    {
+        return decoder_ ? decoder_->hardwareDeviceName() : std::string{};
     }
 
 private:
@@ -1056,9 +1066,19 @@ FrameCacheStats PlaybackSession::cacheStats() const
     return impl_->cacheStats();
 }
 
+std::size_t PlaybackSession::bufferedFrames() const
+{
+    return impl_->bufferedFrameCount();
+}
+
 bool PlaybackSession::usesHardwareAcceleration() const noexcept
 {
     return impl_->usesHardwareAcceleration();
+}
+
+std::string PlaybackSession::hardwareDeviceName() const
+{
+    return impl_->hardwareDeviceName();
 }
 
 } // namespace vidscope::playback

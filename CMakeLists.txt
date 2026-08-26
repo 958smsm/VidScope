@@ -6,7 +6,7 @@ endif()
 
 project(
     VidScope
-    VERSION 0.10.0
+    VERSION 0.12.0
     DESCRIPTION "Frame-accurate professional video inspection, comparison, and export"
     LANGUAGES CXX
 )
@@ -42,12 +42,14 @@ target_sources(
         app/analysis/AnalysisPyramid.cpp
         app/analysis/AnalysisTypes.cpp
         app/analysis/DetectionEngine.cpp
+        app/analysis/VisualSearch.cpp
         app/analysis/VideoAnalyzer.cpp
         app/core/Logging.cpp
         app/export/ExportTypes.cpp
         app/export/ExportManager.cpp
         app/filmstrip/FilmstripModel.cpp
         app/inspection/FrameComparison.cpp
+        app/inspection/FrameHistory.cpp
         app/media/Demuxer.cpp
         app/media/FfmpegRaii.cpp
         app/media/FrameConverter.cpp
@@ -71,6 +73,7 @@ target_sources(
             app/analysis/AnalysisPyramid.h
             app/analysis/AnalysisTypes.h
             app/analysis/DetectionEngine.h
+            app/analysis/VisualSearch.h
             app/analysis/VideoAnalyzer.h
             app/core/Cancellation.h
             app/core/Logging.h
@@ -78,6 +81,7 @@ target_sources(
             app/export/ExportManager.h
             app/filmstrip/FilmstripModel.h
             app/inspection/FrameComparison.h
+            app/inspection/FrameHistory.h
             app/media/Demuxer.h
             app/media/FfmpegRaii.h
             app/media/FrameConverter.h
@@ -124,6 +128,7 @@ target_sources(
         app/widgets/HoverPreviewController.cpp
         app/widgets/HoverPreviewPopup.cpp
         app/widgets/MainWindow.cpp
+        app/widgets/ProfessionalPanel.cpp
         app/widgets/ShortcutEditorDialog.cpp
     PUBLIC
         FILE_SET HEADERS
@@ -139,6 +144,7 @@ target_sources(
             app/widgets/HoverPreviewController.h
             app/widgets/HoverPreviewPopup.h
             app/widgets/MainWindow.h
+            app/widgets/ProfessionalPanel.h
             app/widgets/ShortcutEditorDialog.h
 )
 target_link_libraries(vidscope_ui PUBLIC vidscope_engine Qt6::Widgets)

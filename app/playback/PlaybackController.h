@@ -20,6 +20,18 @@ enum class PlaybackState {
     Error,
 };
 
+struct PlaybackDiagnostics final {
+    double decodeFramesPerSecond = 0.0;
+    qint64 seekMicroseconds = 0;
+    FrameCacheStats frameCache;
+    qsizetype bufferedFrames = 0;
+    qsizetype pendingCommands = 0;
+    quint64 deliveredFrames = 0;
+    quint64 droppedFrameDeliveries = 0;
+    bool hardwareDecodeActive = false;
+    QString hardwareDevice;
+};
+
 class PlaybackController final : public QObject {
     Q_OBJECT
 
@@ -53,6 +65,7 @@ signals:
     void stateChanged(vidscope::playback::PlaybackState state);
     void errorOccurred(const QString& title, const QString& detail);
     void metricsUpdated(double decodeFramesPerSecond, qint64 seekMicroseconds, qsizetype cachedFrames);
+    void diagnosticsUpdated(vidscope::playback::PlaybackDiagnostics diagnostics);
 
 private:
     class Impl;
@@ -64,3 +77,4 @@ private:
 Q_DECLARE_METATYPE(vidscope::media::MediaInfoPtr)
 Q_DECLARE_METATYPE(vidscope::media::DecodedFramePtr)
 Q_DECLARE_METATYPE(vidscope::playback::PlaybackState)
+Q_DECLARE_METATYPE(vidscope::playback::PlaybackDiagnostics)

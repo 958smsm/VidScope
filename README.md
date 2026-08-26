@@ -6,7 +6,7 @@ timestamps, B-frame reordering, VFR navigation, seek behavior, decoded-frame
 ownership, timeline coordinates, thumbnail generation, and cache policy under
 application control.
 
-The implemented milestone is Phase 0-10. It includes media opening, direct
+The implemented milestone is Phase 0-12. It includes media opening, direct
 demux/decode, optional hardware decoding with CPU fallback, bounded frame
 history and forward queues, cancellable keyframe-based seek, exact
 next/previous and signed N-frame navigation, keyframe navigation,
@@ -35,6 +35,19 @@ previous, next, selected/every-N range, keyframe, scene, and high-motion frame
 output. It atomically writes PNG, JPEG, WebP, BMP, and TIFF images and creates
 bounded contact sheets from entire, visible, selected, or detected-scene
 sources without accumulating decoded frame sequences in memory.
+Phase 11 adds a repeatable Release profiler for startup, decode, seek,
+thumbnail conversion, analysis, LOD, timeline paint, cache, contention, and
+hardware-selection evidence. Measured changes reuse the analysis worker's two
+luma allocations, reuse already-computed perceptual hashes, and cache the
+timeline's analysis raster while keeping playhead, selection, markers, and
+hover overlays dynamic.
+Phase 12 adds demuxed chapter metadata and chapter navigation, bounded
+browser-style inspection history, recently inspected frame access, annotated
+marker notes and categories, perceptual-hash visual search, and a dockable
+Professional Tools surface. Live diagnostics report decoder rate, seek
+latency, frame/command queues, cache utilization, dropped GUI deliveries, and
+the active hardware-decode device. The existing thumbnail-backed scene results
+serve as the scene browser.
 
 ## Prerequisites
 
@@ -87,6 +100,8 @@ Playback and navigation:
 - `Shift+Left` / `Shift+Right`: exact backward/forward selected-N jump
 - `Ctrl+Left` / `Ctrl+Right`: previous/next decoded keyframe
 - `Alt+Left` / `Alt+Right`: previous/next available scene marker
+- `Ctrl+Alt+Left` / `Ctrl+Alt+Right`: previous/next embedded chapter
+- `Alt+[` / `Alt+]`: backward/forward through inspected-frame history
 
 Timeline:
 
@@ -102,6 +117,7 @@ Timeline:
   presentation frame; the popup follows the cursor and remains inside the
   application/screen geometry
 - `I` / `O`: set In/Out at the playhead; `M`: toggle a bookmark
+- `Shift+M`: add an annotated marker with type, category, label, and note
 - `Ctrl+Shift+X`: clear selection; `Ctrl+0`: show the entire video
 - configured Zoom In/Out shortcuts: zoom around the visible playhead, or the
   viewport center when the playhead is outside it
@@ -114,6 +130,8 @@ Timeline:
   repeated ranges, and freezes; clicking any result seeks to its timestamp
 - scene list entries receive background-priority thumbnails through the shared
   bounded thumbnail service
+- **Analysis > Find Visually Similar Frames** ranks analyzed frames by
+  perceptual-hash Hamming distance from the current frame
 - scene, near-duplicate, freeze-similarity, and minimum-freeze controls can be
   changed and applied with **Reanalyze Detections** without decoding the video
   again
@@ -144,6 +162,11 @@ Inspection:
 - A/B display modes are Side by side, Overlay, Wipe, Blink, Absolute
   difference, Amplified difference, and SSIM map; SSIM, PSNR, and MSE are
   reported for matching frame dimensions
+- the dockable **Professional Tools** panel lists the bounded recent-frame
+  history and annotated timeline markers; double-clicking a row seeks to it
+- its Diagnostics tab reports decode/seek throughput, bounded queue depths,
+  frame-cache hits/evictions, coalesced GUI-frame drops, and the hardware
+  decoder/device selected by FFmpeg
 
 Export:
 
@@ -185,15 +208,16 @@ analysis batches arrive; no placeholder values are fabricated.
 - [Phase 8 final review](docs/phase-8-review.md)
 - [Phase 9 final review](docs/phase-9-review.md)
 - [Phase 10 final review](docs/phase-10-review.md)
+- [Phase 11 final review](docs/phase-11-review.md)
+- [Phase 12 final review](docs/phase-12-review.md)
 
-Phase 10 is the completed export milestone. `ExportManager` owns a bounded,
-thread-confined decoder/converter, `ExportPlanner` normalizes ranges and hard
-limits, and MainWindow supplies timeline, detection, and analysis targets.
-Measured optimization, audio rendering/A-V sync, and later professional
-features remain later phases.
+Phase 12 is the completed professional-workflow milestone. Audio waveform and
+subtitle track/search support remain deferred until VidScope has a dedicated
+audio/subtitle demux and decode pipeline. A public plugin ABI also remains
+deferred until a concrete extension point can be versioned and tested.
 
 The application version is set from the CMake project version and is visible in
-`Help > About VidScope`. Phase 10 reports version `0.10.0`.
+`Help > About VidScope`. Phase 12 reports version `0.12.0`.
 
 Known timeline frame boundaries and keyframe ticks still grow only from exact
 frames published by the playback engine; opening a video does not force a

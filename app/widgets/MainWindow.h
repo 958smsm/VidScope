@@ -1,7 +1,9 @@
 #pragma once
 
+#include "inspection/FrameHistory.h"
 #include "media/MediaTypes.h"
 #include "playback/PlaybackController.h"
+#include "timeline/TimelineModel.h"
 
 #include <QtWidgets/QMainWindow>
 
@@ -43,6 +45,7 @@ class FilmstripWidget;
 class HoverPreviewController;
 class AnalysisResultsPanel;
 class FrameInspectorPanel;
+class ProfessionalPanel;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -66,7 +69,11 @@ private:
     void updateFrameStatus(const media::DecodedFrame& frame);
     void updateSelectionStatus();
     void applyDetectionResults();
-    void seekAdjacentScene(bool forward);
+    void seekAdjacentMarker(timeline::TimelineMarkerKind kind, bool forward);
+    void navigateHistory(bool forward);
+    void showMarkerEditor(std::optional<std::uint64_t> markerId = std::nullopt);
+    void findVisualMatches();
+    void updateProfessionalTools();
     void showShortcutEditor();
     void exportSingleFrame(exporting::RelativeFrame relativeFrame);
     void exportSelectedFrames();
@@ -94,6 +101,9 @@ private:
     QDockWidget* analysisResultsDock_ = nullptr;
     FrameInspectorPanel* frameInspector_ = nullptr;
     QDockWidget* frameInspectorDock_ = nullptr;
+    ProfessionalPanel* professionalPanel_ = nullptr;
+    QDockWidget* professionalDock_ = nullptr;
+    inspection::FrameHistory frameHistory_;
     media::DecodedFramePtr currentFrame_;
     media::MediaInfoPtr mediaInfo_;
     QProgressDialog* exportProgress_ = nullptr;

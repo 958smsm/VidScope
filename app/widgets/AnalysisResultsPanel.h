@@ -1,6 +1,7 @@
 #pragma once
 
 #include "analysis/DetectionEngine.h"
+#include "analysis/VisualSearch.h"
 #include "thumbnails/ThumbnailTypes.h"
 
 #include <QtCore/QHash>
@@ -30,6 +31,7 @@ public:
     void setThumbnailManager(thumbnails::ThumbnailManager* manager);
     void setDetectionConfig(const analysis::DetectionConfig& config);
     void setResults(const analysis::DetectionResults& results);
+    void setVisualMatches(const std::vector<analysis::VisualMatch>& matches);
     void clearResults();
 
 signals:
@@ -57,6 +59,7 @@ private:
     QTreeWidget* scenes_ = nullptr;
     QTreeWidget* duplicates_ = nullptr;
     QTreeWidget* freezes_ = nullptr;
+    QTreeWidget* visualMatches_ = nullptr;
 };
 
 } // namespace vidscope::widgets

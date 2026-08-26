@@ -6,6 +6,7 @@
 #include <QtCore/QPoint>
 #include <QtCore/QPointF>
 #include <QtCore/QPointer>
+#include <QtGui/QImage>
 #include <QtWidgets/QWidget>
 
 #include <cstdint>
@@ -36,7 +37,16 @@ public:
     [[nodiscard]] std::optional<std::uint64_t> addMarker(
         qint64 nanoseconds,
         TimelineMarkerKind kind,
-        QString label = {});
+        QString label = {},
+        QString category = {},
+        QString note = {});
+    bool updateMarker(
+        std::uint64_t id,
+        qint64 nanoseconds,
+        TimelineMarkerKind kind,
+        QString label = {},
+        QString category = {},
+        QString note = {});
     bool removeMarker(std::uint64_t id);
     void clearMarkers(std::optional<TimelineMarkerKind> kind = std::nullopt);
     [[nodiscard]] std::optional<qint64> adjacentMarkerNanoseconds(
@@ -64,6 +74,7 @@ signals:
         QPoint globalPosition,
         bool active);
     void markerActivated(quint64 id, qint64 nanoseconds);
+    void markersChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -95,10 +106,16 @@ private:
     void updateSelection(qreal x);
     void cancelInteraction();
     void updateCursorForMode();
+    void invalidateHeatmapCache() noexcept;
 
     TimelineModel model_;
     QPointer<analysis::AnalysisManager> analysisManager_;
     TimelineHeatmapRenderer heatmapRenderer_;
+    QImage heatmapCache_;
+    QSize heatmapCachePixelSize_;
+    qreal heatmapCacheDevicePixelRatio_ = 0.0;
+    std::optional<std::size_t> heatmapCacheLodLevel_;
+    bool heatmapCacheDirty_ = true;
     HeatmapMode heatmapMode_ = HeatmapMode::Combined;
     CombinedHeatmapWeights combinedHeatmapWeights_;
     InteractionMode interaction_ = InteractionMode::None;

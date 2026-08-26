@@ -101,6 +101,25 @@ VIDSCOPE_TEST(VideoAnalyzer_exposes_scene_duplicate_and_stable_fingerprint_metri
         != VideoAnalyzer::perceptualHash(white));
 }
 
+VIDSCOPE_TEST(VideoAnalyzer_precomputed_hash_path_is_numerically_identical)
+{
+    const auto previous = plane(23);
+    auto current = plane(177);
+    current.pixels[3] = 91;
+    current.pixels[11] = 244;
+
+    const auto regular = VideoAnalyzer::compare(previous, current);
+    const auto precomputed = VideoAnalyzer::compare(
+        previous,
+        current,
+        VideoAnalyzer::perceptualHash(previous),
+        VideoAnalyzer::perceptualHash(current));
+    VIDSCOPE_REQUIRE(regular.motion == precomputed.motion);
+    VIDSCOPE_REQUIRE(regular.similarity == precomputed.similarity);
+    VIDSCOPE_REQUIRE(regular.sceneChange == precomputed.sceneChange);
+    VIDSCOPE_REQUIRE(regular.duplicate == precomputed.duplicate);
+}
+
 VIDSCOPE_TEST(AnalysisStore_orders_upserts_and_bounds_raw_samples)
 {
     AnalysisStore store(3);

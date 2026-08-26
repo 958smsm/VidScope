@@ -12,6 +12,7 @@
 
 extern "C" {
 #include <libavcodec/codec_desc.h>
+#include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/pixdesc.h>
 }
@@ -122,6 +123,50 @@ MediaInfo buildMediaInfo(
     info.colorSpace = parameters->color_space;
     info.colorPrimaries = parameters->color_primaries;
     info.colorTransfer = parameters->color_trc;
+    info.chapters.reserve(format->nb_chapters);
+    for (unsigned int index = 0; index < format->nb_chapters; ++index) {
+        const AVChapter* chapter = format->chapters[index];
+        if (chapter == nullptr || chapter->time_base.num <= 0
+            || chapter->time_base.den <= 0) {
+            continue;
+        }
+
+        MediaChapter converted;
+        converted.id = chapter->id;
+        const auto normalizeChapterTime =
+            [&info, chapter](const std::int64_t timestamp) {
+                const auto videoTimestamp = av_rescale_q(
+                    timestamp,
+                    chapter->time_base,
+                    info.timeBase);
+                auto time = timestampToMediaTime(
+                    videoTimestamp,
+                    info.streamStartTimestamp,
+                    info.timeBase);
+                time = std::max(time, MediaTime::zero());
+                return info.duration > MediaTime::zero()
+                    ? std::min(time, info.duration)
+                    : time;
+            };
+        converted.start = normalizeChapterTime(chapter->start);
+        converted.end = chapter->end == AV_NOPTS_VALUE
+            ? (info.duration > MediaTime::zero() ? info.duration : converted.start)
+            : std::max(normalizeChapterTime(chapter->end), converted.start);
+        if (const AVDictionaryEntry* title =
+                av_dict_get(chapter->metadata, "title", nullptr, 0)) {
+            converted.title = title->value != nullptr ? title->value : "";
+        }
+        info.chapters.push_back(std::move(converted));
+    }
+    std::sort(
+        info.chapters.begin(),
+        info.chapters.end(),
+        [](const MediaChapter& left, const MediaChapter& right) {
+            if (left.start != right.start) {
+                return left.start < right.start;
+            }
+            return left.id < right.id;
+        });
     return info;
 }
 
@@ -274,5 +319,3 @@ void MediaSource::setCancellationToken(core::CancellationToken cancellation)
 }
 
 } // namespace vidscope::media
-
-

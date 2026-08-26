@@ -174,6 +174,7 @@ void TimelineWidget::setDuration(qint64 nanoseconds)
     }
 
     model_.reset(duration);
+    invalidateHeatmapCache();
     setEnabled(model_.hasMedia());
     emitViewportChanged();
     emitSelectionChanged();
@@ -207,17 +208,24 @@ void TimelineWidget::setAnalysisManager(analysis::AnalysisManager* manager)
         disconnect(analysisManager_, nullptr, this, nullptr);
     }
     analysisManager_ = manager;
+    invalidateHeatmapCache();
     if (analysisManager_) {
         connect(
             analysisManager_,
             &analysis::AnalysisManager::samplesAvailable,
             this,
-            [this](qint64, qint64, quint64) { update(); });
+            [this](qint64, qint64, quint64) {
+                invalidateHeatmapCache();
+                update();
+            });
         connect(
             analysisManager_,
             &analysis::AnalysisManager::stateChanged,
             this,
-            [this](analysis::AnalysisState) { update(); });
+            [this](analysis::AnalysisState) {
+                invalidateHeatmapCache();
+                update();
+            });
     }
     update();
 }
@@ -235,6 +243,7 @@ void TimelineWidget::setHeatmapMode(const HeatmapMode mode)
         return;
     }
     heatmapMode_ = mode;
+    invalidateHeatmapCache();
     setToolTip(tr("%1 analysis heatmap").arg(heatmapModeName(mode)));
     update();
 }
@@ -248,6 +257,7 @@ void TimelineWidget::setCombinedHeatmapWeights(CombinedHeatmapWeights weights)
         return;
     }
     combinedHeatmapWeights_ = weights;
+    invalidateHeatmapCache();
     update();
 }
 
@@ -269,13 +279,43 @@ const TimelineModel& TimelineWidget::model() const noexcept
 std::optional<std::uint64_t> TimelineWidget::addMarker(
     qint64 nanoseconds,
     TimelineMarkerKind kind,
-    QString label)
+    QString label,
+    QString category,
+    QString note)
 {
-    auto id = model_.addMarker(nonNegativeTime(nanoseconds), kind, std::move(label));
+    auto id = model_.addMarker(
+        nonNegativeTime(nanoseconds),
+        kind,
+        std::move(label),
+        std::move(category),
+        std::move(note));
     if (id) {
         update();
+        emit markersChanged();
     }
     return id;
+}
+
+bool TimelineWidget::updateMarker(
+    const std::uint64_t id,
+    const qint64 nanoseconds,
+    const TimelineMarkerKind kind,
+    QString label,
+    QString category,
+    QString note)
+{
+    if (!model_.updateMarker(
+            id,
+            nonNegativeTime(nanoseconds),
+            kind,
+            std::move(label),
+            std::move(category),
+            std::move(note))) {
+        return false;
+    }
+    update();
+    emit markersChanged();
+    return true;
 }
 
 bool TimelineWidget::removeMarker(std::uint64_t id)
@@ -284,13 +324,18 @@ bool TimelineWidget::removeMarker(std::uint64_t id)
         return false;
     }
     update();
+    emit markersChanged();
     return true;
 }
 
 void TimelineWidget::clearMarkers(std::optional<TimelineMarkerKind> kind)
 {
+    const auto previousSize = model_.markers().size();
     model_.clearMarkers(kind);
     update();
+    if (model_.markers().size() != previousSize) {
+        emit markersChanged();
+    }
 }
 
 std::optional<qint64> TimelineWidget::adjacentMarkerNanoseconds(
@@ -375,6 +420,7 @@ void TimelineWidget::toggleBookmarkAtPlayhead()
         (void)model_.addMarker(playhead, TimelineMarkerKind::Bookmark, tr("Bookmark"));
     }
     update();
+    emit markersChanged();
 }
 
 QRectF TimelineWidget::timelineRect() const noexcept
@@ -490,9 +536,16 @@ qint64 TimelineWidget::nearestKnownPresentationIndex(media::MediaTime time) cons
 
 void TimelineWidget::emitViewportChanged()
 {
+    invalidateHeatmapCache();
     emit viewportChanged(
         toNanoseconds(model_.viewportStart()),
         toNanoseconds(model_.viewportEnd()));
+}
+
+void TimelineWidget::invalidateHeatmapCache() noexcept
+{
+    heatmapCacheDirty_ = true;
+    heatmapCacheLodLevel_.reset();
 }
 
 void TimelineWidget::emitSelectionChanged()
@@ -611,23 +664,52 @@ void TimelineWidget::paintEvent(QPaintEvent* event)
 
     std::optional<std::size_t> paintedLodLevel;
     if (analysisManager_) {
+        const QRectF heatmapBounds = track.adjusted(1.0, 1.0, -1.0, -1.0);
+        const qreal deviceScale = devicePixelRatioF();
+        const QSize cachePixelSize(
+            std::max(1, static_cast<int>(std::ceil(heatmapBounds.width() * deviceScale))),
+            std::max(1, static_cast<int>(std::ceil(heatmapBounds.height() * deviceScale))));
         const std::size_t pixelBudget = std::clamp<std::size_t>(
             static_cast<std::size_t>(std::ceil(track.width() * devicePixelRatioF())),
             1,
             kMaximumFramePrimitives);
-        const auto heatmap = analysisManager_->lodView(
-            toNanoseconds(model_.viewportStart()),
-            toNanoseconds(model_.viewportEnd()),
-            pixelBudget);
-        if (!heatmap.buckets.empty()) {
-            heatmapRenderer_.paint(
-                painter,
-                track.adjusted(1.0, 1.0, -1.0, -1.0),
-                heatmap,
-                heatmapMode_,
-                combinedHeatmapWeights_);
-            paintedLodLevel = heatmap.level;
+        if (heatmapCacheDirty_
+            || heatmapCachePixelSize_ != cachePixelSize
+            || !qFuzzyCompare(heatmapCacheDevicePixelRatio_, deviceScale)) {
+            const auto heatmap = analysisManager_->lodView(
+                toNanoseconds(model_.viewportStart()),
+                toNanoseconds(model_.viewportEnd()),
+                pixelBudget);
+            QImage rendered(cachePixelSize, QImage::Format_ARGB32_Premultiplied);
+            if (!rendered.isNull()) {
+                rendered.setDevicePixelRatio(deviceScale);
+                rendered.fill(Qt::transparent);
+                if (!heatmap.buckets.empty()) {
+                    QPainter cachePainter(&rendered);
+                    heatmapRenderer_.paint(
+                        cachePainter,
+                        QRectF(
+                            QPointF(0.0, 0.0),
+                            QSizeF(
+                                static_cast<qreal>(cachePixelSize.width()) / deviceScale,
+                                static_cast<qreal>(cachePixelSize.height()) / deviceScale)),
+                        heatmap,
+                        heatmapMode_,
+                        combinedHeatmapWeights_);
+                    heatmapCacheLodLevel_ = heatmap.level;
+                } else {
+                    heatmapCacheLodLevel_.reset();
+                }
+                heatmapCache_ = std::move(rendered);
+                heatmapCachePixelSize_ = cachePixelSize;
+                heatmapCacheDevicePixelRatio_ = deviceScale;
+                heatmapCacheDirty_ = false;
+            }
         }
+        if (!heatmapCache_.isNull()) {
+            painter.drawImage(heatmapBounds, heatmapCache_);
+        }
+        paintedLodLevel = heatmapCacheLodLevel_;
     }
 
     if (const auto& selection = model_.selection()) {

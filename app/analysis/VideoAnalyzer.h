@@ -37,6 +37,10 @@ public:
     [[nodiscard]] LumaPlane extract(
         const media::DecodedFrame& frame,
         core::CancellationToken cancellation = {});
+    [[nodiscard]] bool extract(
+        const media::DecodedFrame& frame,
+        LumaPlane& destination,
+        core::CancellationToken cancellation = {});
     void reset() noexcept;
     [[nodiscard]] QSize outputSize() const noexcept;
 
@@ -50,6 +54,11 @@ public:
     [[nodiscard]] static FrameAnalysisMetrics compare(
         const LumaPlane& previous,
         const LumaPlane& current);
+    [[nodiscard]] static FrameAnalysisMetrics compare(
+        const LumaPlane& previous,
+        const LumaPlane& current,
+        std::uint64_t previousPerceptualHash,
+        std::uint64_t currentPerceptualHash);
     [[nodiscard]] static float motionScore(
         const LumaPlane& previous,
         const LumaPlane& current);

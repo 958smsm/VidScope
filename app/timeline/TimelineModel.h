@@ -26,6 +26,8 @@ struct TimelineMarker final {
     media::MediaTime time{};
     TimelineMarkerKind kind = TimelineMarkerKind::Bookmark;
     QString label;
+    QString category;
+    QString note;
 
     friend bool operator==(const TimelineMarker&, const TimelineMarker&) = default;
 };
@@ -148,12 +150,16 @@ public:
     [[nodiscard]] std::optional<std::uint64_t> addMarker(
         media::MediaTime time,
         TimelineMarkerKind kind,
-        QString label = {});
+        QString label = {},
+        QString category = {},
+        QString note = {});
     bool updateMarker(
         std::uint64_t id,
         media::MediaTime time,
         TimelineMarkerKind kind,
-        QString label = {});
+        QString label = {},
+        QString category = {},
+        QString note = {});
     bool removeMarker(std::uint64_t id);
     void clearMarkers(std::optional<TimelineMarkerKind> kind = std::nullopt);
     [[nodiscard]] std::span<const TimelineMarker> markers() const noexcept;

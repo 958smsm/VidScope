@@ -145,6 +145,17 @@ VIDSCOPE_TEST(Phase7_progressive_analysis_publishes_bounded_lod_views)
     withHeatmap.fill(Qt::transparent);
     timeline.render(&withHeatmap);
     VIDSCOPE_REQUIRE(withHeatmap != withoutHeatmap);
+
+    QImage cachedRepeat(timeline.size(), QImage::Format_ARGB32_Premultiplied);
+    cachedRepeat.fill(Qt::transparent);
+    timeline.render(&cachedRepeat);
+    VIDSCOPE_REQUIRE(cachedRepeat == withHeatmap);
+
+    timeline.setHeatmapMode(HeatmapMode::Motion);
+    QImage invalidated(timeline.size(), QImage::Format_ARGB32_Premultiplied);
+    invalidated.fill(Qt::transparent);
+    timeline.render(&invalidated);
+    VIDSCOPE_REQUIRE(invalidated != cachedRepeat);
 }
 
 VIDSCOPE_TEST(Phase7_renderer_supports_motion_similarity_and_configurable_combined_modes)

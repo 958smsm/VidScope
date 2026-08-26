@@ -737,7 +737,9 @@ FrameBoundaryView TimelineModel::visibleFrameBoundaries(
 std::optional<std::uint64_t> TimelineModel::addMarker(
     const media::MediaTime time,
     const TimelineMarkerKind kind,
-    QString label)
+    QString label,
+    QString category,
+    QString note)
 {
     if (!hasMedia() || markers_.size() >= maximumMarkers_ || nextMarkerId_ == 0) {
         return std::nullopt;
@@ -745,7 +747,13 @@ std::optional<std::uint64_t> TimelineModel::addMarker(
 
     const std::uint64_t id = nextMarkerId_;
     nextMarkerId_ = id == std::numeric_limits<std::uint64_t>::max() ? 0 : id + 1;
-    TimelineMarker marker{id, clampTime(time), kind, std::move(label)};
+    TimelineMarker marker{
+        id,
+        clampTime(time),
+        kind,
+        std::move(label),
+        std::move(category),
+        std::move(note)};
     const auto insertion = std::lower_bound(
         markers_.begin(), markers_.end(), marker, markerLess);
     markers_.insert(insertion, std::move(marker));
@@ -756,7 +764,9 @@ bool TimelineModel::updateMarker(
     const std::uint64_t id,
     const media::MediaTime time,
     const TimelineMarkerKind kind,
-    QString label)
+    QString label,
+    QString category,
+    QString note)
 {
     const auto found = std::find_if(
         markers_.begin(),
@@ -766,7 +776,13 @@ bool TimelineModel::updateMarker(
         return false;
     }
 
-    TimelineMarker updated{id, clampTime(time), kind, std::move(label)};
+    TimelineMarker updated{
+        id,
+        clampTime(time),
+        kind,
+        std::move(label),
+        std::move(category),
+        std::move(note)};
     markers_.erase(found);
     const auto insertion = std::lower_bound(
         markers_.begin(), markers_.end(), updated, markerLess);

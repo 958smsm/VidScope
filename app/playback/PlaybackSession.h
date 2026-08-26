@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <string>
 
 namespace vidscope::playback {
 
@@ -65,7 +66,9 @@ public:
     [[nodiscard]] const media::MediaInfo* mediaInfo() const noexcept;
     [[nodiscard]] media::DecodedFramePtr currentFrame() const noexcept;
     [[nodiscard]] FrameCacheStats cacheStats() const;
+    [[nodiscard]] std::size_t bufferedFrames() const;
     [[nodiscard]] bool usesHardwareAcceleration() const noexcept;
+    [[nodiscard]] std::string hardwareDeviceName() const;
 
 private:
     class Impl;
@@ -73,5 +76,4 @@ private:
 };
 
 } // namespace vidscope::playback
-
 
